@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} · Tasks{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>{{ job.title }}</h1><div class="sub">Target <code>{{ job.scope }}</code> · started {{ job.as_dict().started }}</div></div>
+  <div class="row"><span class="pill {{ job.status }}" id="status">{{ job.status }}</span>
+    {% if job.scope not in ('traefik', 'system') %}<a class="btn" href="/sites/{{ job.scope }}">Site →</a>{% endif %}</div>
+</div>
+<div class="console" id="console" style="max-height:none;min-height:60vh"></div>
+<div id="result" style="margin-top:14px"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const { $, esc, streamJob } = FDM;
+  streamJob({{ job.id | tojson }}, $("#console"), {
+    onStatus: (s) => { $("#status").className = `pill ${s}`; $("#status").textContent = s; },
+    onDone: (job) => { if (job.result && job.result.url) $("#result").innerHTML = `<a class="btn primary" href="${esc(job.result.url)}" target="_blank">Open ${esc(job.result.url)} ↗</a>`; },
+  });
+})();
+</script>
+{% endblock %}

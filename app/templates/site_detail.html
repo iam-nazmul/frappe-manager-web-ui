@@ -1,0 +1,452 @@
+{% extends "base.html" %}
+{% block title %}{{ site.domain }} · Frappe Docker Manager{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <div class="row"><h1>{{ site.domain }}</h1><span class="pill {{ site.state }}" id="site-state">{{ site.state }}</span>
+      {% if not site.managed %}<span class="pill plain" title="Created by the original CLI scripts">CLI-created</span>{% endif %}</div>
+    <div class="sub"><a href="{{ site.url }}" target="_blank">{{ site.url }} ↗</a> · <span class="mono">{{ site.version }}</span> · {{ 'VPS / server' if site.mode == 'server' else 'Local' }}{{ ' · HTTPS' if site.ssl }}</div>
+  </div>
+  <div class="row">
+    <a class="btn primary" href="{{ site.url }}" target="_blank">Open site ↗</a>
+    <button class="btn" data-container="start">▶ Start</button>
+    <button class="btn" data-container="restart">↻ Restart</button>
+    <button class="btn" data-container="stop">■ Stop</button>
+  </div>
+</div>
+
+{% if running_job %}
+<div class="callout warn">A task is running for this site: <a href="/jobs/{{ running_job.id }}">{{ running_job.title }}</a></div>
+{% endif %}
+{% if hosts.needed and not hosts.present and site.mode == 'local' %}
+<div class="callout warn">
+  <strong>{{ site.domain }}</strong> is not in <code>/etc/hosts</code>, so the browser can't resolve it.
+  {% if hosts.writable %}<button class="btn sm" id="hosts-add">Add it now</button>{% else %}Run this in a terminal:{% endif %}
+  <div class="copy-line" style="margin-top:8px"><code>{{ hosts.command }}</code><button class="btn sm" data-copy="{{ hosts.command }}">Copy</button></div>
+</div>
+{% endif %}
+
+<div class="tabs" data-tabs>
+  <button data-tab="overview">Overview</button>
+  <button data-tab="processes">Processes</button>
+  <button data-tab="logs">Logs</button>
+  <button data-tab="apps">Apps &amp; bench</button>
+  <button data-tab="terminal">Terminal</button>
+  <button data-tab="files">Files &amp; packages</button>
+  <button data-tab="maintenance">Maintenance</button>
+</div>
+
+<!-- ======================= overview ======================= -->
+<section class="tab-panel" id="tab-overview">
+  <div class="card tight" style="margin-bottom:16px">
+    <div class="row between" style="padding:14px 16px;border-bottom:1px solid var(--border)">
+      <h2 style="margin:0">Containers</h2>
+      <div class="row"><button class="btn sm" data-container="recreate" title="Re-create the app container from the compose file">Re-create app</button>
+        <button class="btn sm" data-container="down" title="Remove containers, keep data volumes">Down (keep data)</button></div>
+    </div>
+    <div id="containers"></div>
+  </div>
+
+  <div class="grid cols-2">
+    <div class="card">
+      <h2>Site information</h2>
+      <dl class="kv small">
+        <dt>Site name</dt><dd class="mono">{{ site.domain }}</dd>
+        <dt>Project</dt><dd class="mono">{{ site.project }}</dd>
+        <dt>ERPNext image</dt><dd class="mono">frappe/erpnext:{{ site.version }}</dd>
+        <dt>Compose file</dt><dd class="mono">{{ site.compose_file or '—' }}</dd>
+        {% if site.apps_dir %}<dt>Apps (VS Code)</dt><dd class="mono">{{ site.apps_dir }}
+          <button class="btn sm" data-copy="code {{ site.apps_dir }}">Copy "code …"</button></dd>{% endif %}
+        {% if site.created %}<dt>Created</dt><dd>{{ site.created }}</dd>{% endif %}
+      </dl>
+      <details style="margin-top:12px"><summary class="muted">View compose file</summary>
+        <pre class="code" id="compose-text" style="margin-top:8px">Loading…</pre></details>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Credentials</h2><button class="btn sm" id="reveal">Reveal</button></div>
+      <dl class="kv small" id="creds">
+        <dt>Desk user</dt><dd class="mono">Administrator</dd>
+        <dt>Desk password</dt><dd class="mono">••••••</dd>
+        <dt>MariaDB root</dt><dd class="mono">••••••</dd>
+        <dt>Redis</dt><dd class="mono">••••••</dd>
+      </dl>
+      <p class="muted small" style="margin-top:10px">Stored in <code>.env</code> next to the compose file. Changing the desk password here: Apps &amp; bench → Set admin password.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= processes ======================= -->
+<section class="tab-panel" id="tab-processes">
+  <div class="card tight">
+    <div class="row between" style="padding:14px 16px;border-bottom:1px solid var(--border)">
+      <div><h2 style="margin:0">Supervisor processes</h2><div class="muted small">All Frappe processes run inside <code>{{ site.app_container }}</code></div></div>
+      <div class="row"><button class="btn sm" data-proc="restart" data-name="all">↻ Restart all</button>
+        <button class="btn sm" data-proc="stop" data-name="all">■ Stop all</button>
+        <button class="btn sm" data-proc="start" data-name="all">▶ Start all</button>
+        <button class="btn sm ghost" id="proc-refresh">⟳</button></div>
+    </div>
+    <div id="processes"><div class="empty">Loading…</div></div>
+  </div>
+</section>
+
+<!-- ======================= logs ======================= -->
+<section class="tab-panel" id="tab-logs">
+  <div class="card">
+    <div class="row" style="margin-bottom:12px">
+      <select id="log-source" style="width:auto">
+        <optgroup label="Frappe processes">
+          <option value="web">frappe-web</option><option value="worker-default">worker-default</option>
+          <option value="worker-short">worker-short</option><option value="worker-long">worker-long</option>
+          <option value="schedule">scheduler</option><option value="websocket">websocket</option>
+          <option value="supervisord">supervisord</option></optgroup>
+        <optgroup label="Bench logs"><option value="bench-frappe">frappe.log</option><option value="bench-web-error">web.error.log</option></optgroup>
+        <optgroup label="Containers"><option value="app">app container</option><option value="create-site">create-site</option>
+          <option value="db">MariaDB</option><option value="redis">Redis</option></optgroup>
+      </select>
+      <select id="log-lines" style="width:auto"><option>100</option><option selected>300</option><option>1000</option><option>5000</option></select>
+      <button class="btn" id="log-load">Load</button>
+      <button class="btn primary" id="log-follow">▶ Follow live</button>
+      <span class="spacer"></span>
+      <button class="btn sm ghost" id="log-clear">Clear</button>
+    </div>
+    <div class="console" id="log-console" style="min-height:420px">Choose a log and press Load or Follow.</div>
+  </div>
+</section>
+
+<!-- ======================= apps & bench ======================= -->
+<section class="tab-panel" id="tab-apps">
+  <div class="grid cols-2">
+    <div class="card">
+      <h2>Get &amp; install an app</h2>
+      <form id="get-app">
+        <div class="field"><label>App name or git URL</label>
+          <input type="text" name="source" placeholder="hrms   or   https://github.com/frappe/hrms" required spellcheck="false"></div>
+        <div class="field"><label>Branch <span class="muted small">(optional, e.g. version-15)</span></label>
+          <input type="text" name="branch" placeholder="version-15" spellcheck="false"></div>
+        <label class="check"><input type="checkbox" name="install" checked><span>Install on {{ site.domain }} after download</span></label>
+        <button class="btn primary">Get app</button>
+      </form>
+      <hr style="border:0;border-top:1px solid var(--border);margin:18px 0">
+      <form id="install-app" class="row">
+        <input type="text" name="app" placeholder="app_name (already in bench)" style="flex:1" spellcheck="false" required>
+        <button class="btn" name="cmd" value="install-app">Install</button>
+        <button class="btn danger" name="cmd" value="uninstall-app">Uninstall</button>
+      </form>
+      <p class="muted small" style="margin-top:10px">Apps are stored in the {{ 'mounted apps folder' if site.dev_mount else 'apps volume' }} and survive restarts. "Access denied" on install? Use Maintenance → Fix DB permissions.</p>
+    </div>
+    <div class="card">
+      <h2>Bench commands</h2>
+      <div class="row" style="gap:6px">
+        {% for cmd, label in bench_commands.items() %}
+          <button class="btn sm" data-bench="{{ cmd }}" title="bench {{ cmd }}">{{ label }}</button>
+        {% endfor %}
+      </div>
+      <hr style="border:0;border-top:1px solid var(--border);margin:18px 0">
+      <form id="admin-pw" class="row">
+        <input type="password" name="password" placeholder="New Administrator password" style="flex:1" required autocomplete="new-password">
+        <button class="btn">Set admin password</button>
+      </form>
+    </div>
+  </div>
+  <div class="card tight" style="margin-top:16px">
+    <div class="row between" style="padding:14px 16px;border-bottom:1px solid var(--border)">
+      <h2 style="margin:0">Backups</h2>
+      <div class="row"><button class="btn sm primary" data-bench="backup">+ New backup</button><button class="btn sm ghost" id="backups-refresh">⟳</button></div>
+    </div>
+    <div id="backups"><div class="empty">Open this tab to load backups.</div></div>
+  </div>
+</section>
+
+<!-- ======================= terminal ======================= -->
+<section class="tab-panel" id="tab-terminal">
+  <div class="card">
+    <div class="row" style="margin-bottom:12px">
+      <select id="term-container" style="width:auto"></select>
+      <select id="term-user" style="width:auto"><option value="frappe">user: frappe</option><option value="root">user: root</option></select>
+      <select id="term-mode" style="width:auto"><option value="shell">bash shell</option><option value="console">bench console (Python)</option><option value="mariadb">bench mariadb (SQL)</option></select>
+      <button class="btn primary" id="term-connect">Connect</button>
+      <button class="btn" id="term-disconnect" disabled>Disconnect</button>
+    </div>
+    <div class="term-wrap"><div id="terminal" style="height:100%"></div></div>
+    <p class="muted small" style="margin-top:8px">Equivalent to <code>docker exec -it &lt;container&gt; bash</code>. Root shells can install packages, but changes vanish when the container is re-created.</p>
+  </div>
+</section>
+
+<!-- ======================= files & packages ======================= -->
+<section class="tab-panel" id="tab-files">
+  <div class="grid cols-2">
+    <div class="card">
+      <h2>Upload file to container</h2>
+      <form id="upload">
+        <div class="field"><label>Container</label><select name="container" class="container-select"></select></div>
+        <div class="field"><label>Destination folder</label>
+          <input type="text" name="dest" value="/home/frappe/frappe-bench/sites/{{ site.domain }}/private/files/" spellcheck="false"></div>
+        <div class="field"><input type="file" name="file" required></div>
+        <button class="btn primary">Upload</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>Download from container</h2>
+      <form id="download">
+        <div class="field"><label>Container</label><select name="container" class="container-select"></select></div>
+        <div class="field"><label>Path (file or folder)</label>
+          <input type="text" name="path" value="/home/frappe/frappe-bench/sites/{{ site.domain }}/site_config.json" spellcheck="false"></div>
+        <button class="btn">Download (.tar)</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>Install OS packages</h2>
+      <form id="packages">
+        <div class="field"><label>Container</label><select name="container" class="container-select"></select></div>
+        <div class="field"><label>Packages</label><input type="text" name="packages" placeholder="nano vim" spellcheck="false" required></div>
+        <div class="row"><button class="btn primary">Install</button>
+          <button class="btn" type="button" id="pkg-preset">Common tools preset</button></div>
+      </form>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= maintenance ======================= -->
+<section class="tab-panel" id="tab-maintenance">
+  <div class="grid cols-2">
+    <div class="card">
+      <h2>Repairs</h2>
+      <div class="stack" style="gap:12px">
+        <div class="row between"><div><strong>Fix DB permissions</strong><div class="muted small">Grants the site DB user access from any container IP (fixes "Access denied" on install-app).</div></div>
+          <button class="btn" id="fix-db">Run</button></div>
+        <div class="row between"><div><strong>Fix restart policies</strong><div class="muted small">Sets <code>unless-stopped</code> so containers come back after a reboot.</div></div>
+          <button class="btn" id="fix-restart">Run</button></div>
+        <div class="row between"><div><strong>Repair proxy network</strong><div class="muted small">Re-creates <code>traefik_proxy</code> and reconnects every site (all sites pause ~30s).</div></div>
+          <button class="btn" id="fix-network">Run</button></div>
+      </div>
+    </div>
+    <div class="card" style="border-color:color-mix(in srgb,var(--err) 35%,var(--border))">
+      <h2 style="color:var(--err)">Delete site</h2>
+      <p class="small">Removes all containers, <strong>volumes (database + files)</strong> and the site folder. This cannot be undone - take a backup first.</p>
+      <form id="delete-site">
+        <div class="field"><label>Type <code>{{ site.domain }}</code> to confirm</label>
+          <input type="text" name="confirm" autocomplete="off" spellcheck="false"></div>
+        {% if site.dev_mount %}<label class="check"><input type="checkbox" name="remove_dev_dir"><span>Also delete the VS Code apps folder <small class="mono">{{ site.apps_dir }}</small></span></label>{% endif %}
+        <button class="btn danger solid">Delete everything</button>
+      </form>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+<script>
+(() => {
+  const { $, $$, esc, api, toast, runJob, confirmAction, logViewer } = FDM;
+  const P = {{ site.project | tojson }};
+  const DOMAIN = {{ site.domain | tojson }};
+  let site = {{ {"containers": site.containers, "app_container": site.app_container, "state": site.state} | tojson }};
+
+  /* ---------- containers ---------- */
+  function renderContainers() {
+    const rows = site.containers.map((c) => {
+      const done = c.service === "create-site" && !c.running && c.exit_code === 0;
+      const state = c.running ? (c.health || "running") : (done ? "completed" : c.state);
+      const cls = c.running ? (c.health === "unhealthy" ? "unhealthy" : c.health === "starting" ? "starting" : "running") : (done ? "ok" : "stopped");
+      return `<tr><td class="mono">${esc(c.name)}</td><td class="hide-sm muted">${esc(c.service)}</td>
+        <td><span class="pill ${cls}">${esc(state)}</span></td>
+        <td class="hide-sm mono small">${esc(c.image)}</td><td class="hide-sm muted small">${esc(c.restart_policy)}</td>
+        <td style="text-align:right;white-space:nowrap">${c.service === "create-site" ? "" : (c.running
+          ? `<button class="btn sm" data-one="restart" data-name="${esc(c.name)}">Restart</button> <button class="btn sm" data-one="stop" data-name="${esc(c.name)}">Stop</button>`
+          : `<button class="btn sm" data-one="start" data-name="${esc(c.name)}">Start</button>`)}</td></tr>`;
+    }).join("");
+    $("#containers").innerHTML = site.containers.length
+      ? `<table><thead><tr><th>Container</th><th class="hide-sm">Service</th><th>State</th><th class="hide-sm">Image</th><th class="hide-sm">Restart</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+      : `<div class="empty">No containers yet. Press <strong>Start</strong> to deploy from the compose file.</div>`;
+    const running = site.containers.filter((c) => c.running);
+    $$(".container-select").forEach((sel) => {
+      const cur = sel.value;
+      sel.innerHTML = site.containers.filter((c) => c.service !== "create-site").map((c) => `<option ${c.running ? "" : "disabled"}>${esc(c.name)}</option>`).join("");
+      if (cur) sel.value = cur;
+    });
+    const tc = $("#term-container"), cur = tc.value;
+    tc.innerHTML = running.map((c) => `<option>${esc(c.name)}</option>`).join("") || "<option disabled>no running containers</option>";
+    if (cur) tc.value = cur;
+    const st = $("#site-state"); st.textContent = site.state; st.className = `pill ${site.state}`;
+  }
+  async function refreshSite() {
+    try { site = await api(`/api/sites/${P}`); renderContainers(); } catch (e) { /* site may be gone */ }
+  }
+  renderContainers();
+  setInterval(refreshSite, 10000);
+
+  $$("[data-container]").forEach((b) => b.addEventListener("click", async () => {
+    const act = b.dataset.container;
+    if (act === "down" && !(await confirmAction("Remove all containers of this site? Data volumes are kept; Start brings it back."))) return;
+    if (act === "stop" && !(await confirmAction(`Stop all containers of ${DOMAIN}?`))) return;
+    runJob(`/api/sites/${P}/containers/${act}`, {}, { onDone: refreshSite });
+  }));
+  document.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-one]");
+    if (!b) return;
+    b.disabled = true;
+    try { await api(`/api/sites/${P}/container/${b.dataset.name}/${b.dataset.one}`, { method: "POST" }); toast(`${b.dataset.name}: ${b.dataset.one} done`, "ok"); }
+    catch (err) { toast(err.message, "err"); }
+    refreshSite();
+  });
+
+  $("#reveal").onclick = async () => {
+    const c = await api(`/api/sites/${P}/credentials`);
+    $("#creds").innerHTML = [["Desk user", c.admin_user], ["Desk password", c.admin_password], ["MariaDB root", c.db_root_password], ["Redis", c.redis_password]]
+      .map(([k, v]) => `<dt>${k}</dt><dd class="mono">${esc(v)} <button class="btn sm ghost" data-copy="${esc(v)}">copy</button></dd>`).join("");
+  };
+  $("details:has(#compose-text)").addEventListener("toggle", async (e) => {
+    if (e.target.open) $("#compose-text").textContent = await api(`/api/sites/${P}/compose`);
+  });
+  const hostsBtn = $("#hosts-add");
+  if (hostsBtn) hostsBtn.onclick = async () => {
+    try { await api(`/api/sites/${P}/hosts`, { method: "POST" }); toast("Added to /etc/hosts", "ok"); hostsBtn.closest(".callout").remove(); }
+    catch (e) { toast(e.message, "err"); }
+  };
+
+  /* ---------- processes ---------- */
+  async function loadProcesses() {
+    const box = $("#processes");
+    try {
+      const data = await api(`/api/sites/${P}/processes`);
+      if (!data.ok) { box.innerHTML = `<div class="empty">${esc(data.error)}<br><span class="small">The app container may still be starting.</span></div>`; return; }
+      box.innerHTML = `<table><thead><tr><th>Process</th><th>State</th><th class="hide-sm">Details</th><th></th></tr></thead><tbody>${data.processes.map((p) => `
+        <tr><td class="mono">${esc(p.name)}</td><td><span class="pill ${esc(p.state)}">${esc(p.state)}</span></td><td class="hide-sm muted small">${esc(p.info)}</td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn sm" data-proc="restart" data-name="${esc(p.name)}">Restart</button>
+          ${p.state === "RUNNING" ? `<button class="btn sm" data-proc="stop" data-name="${esc(p.name)}">Stop</button>` : `<button class="btn sm" data-proc="start" data-name="${esc(p.name)}">Start</button>`}
+          <button class="btn sm ghost" data-proclog="${esc(p.name)}">Logs</button></td></tr>`).join("")}</tbody></table>`;
+    } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  }
+  $("#proc-refresh").onclick = loadProcesses;
+  document.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-proc]");
+    if (b) {
+      b.disabled = true;
+      try {
+        const r = await api(`/api/sites/${P}/processes`, { method: "POST", body: { action: b.dataset.proc, process: b.dataset.name } });
+        toast(r.output || "done", r.ok ? "ok" : "err");
+      } catch (err) { toast(err.message, "err"); }
+      b.disabled = false; loadProcesses();
+    }
+    const l = e.target.closest("[data-proclog]");
+    if (l) {
+      const map = { "frappe-web": "web", "frappe-schedule": "schedule", "frappe-websocket": "websocket" };
+      const n = l.dataset.proclog.replace(/^frappe:/, "");
+      $("#log-source").value = map[n] || n.replace("frappe-", "");
+      document.querySelector('[data-tab="logs"]').click();
+      viewer.follow($("#log-source").value, 200); setFollowBtn();
+    }
+  });
+
+  /* ---------- logs ---------- */
+  const viewer = logViewer($("#log-console"), (src, lines, follow) => `/api/sites/${P}/logs${follow ? "/stream" : ""}?source=${encodeURIComponent(src)}&lines=${lines}`);
+  const setFollowBtn = () => { $("#log-follow").textContent = viewer.following ? "■ Stop following" : "▶ Follow live"; };
+  $("#log-load").onclick = () => { viewer.load($("#log-source").value, $("#log-lines").value); setFollowBtn(); };
+  $("#log-follow").onclick = () => { viewer.following ? viewer.stop() : viewer.follow($("#log-source").value, $("#log-lines").value); setFollowBtn(); };
+  $("#log-clear").onclick = () => { $("#log-console").textContent = ""; };
+
+  /* ---------- bench ---------- */
+  const bench = (command, params, title) => runJob(`/api/sites/${P}/bench`, { command, params }, { title, onDone: (j) => { if (command === "backup") loadBackups(); } });
+  $$("[data-bench]").forEach((b) => b.addEventListener("click", async () => {
+    const cmd = b.dataset.bench;
+    if (["migrate", "build"].includes(cmd) && !(await confirmAction(`Run bench ${cmd}? Processes restart afterwards.`))) return;
+    bench(cmd, {});
+  }));
+  $("#get-app").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = e.target, src = f.source.value.trim();
+    const name = src.replace(/\.git$/, "").split("/").pop().replace(/-/g, "_");
+    runJob(`/api/sites/${P}/bench`, { command: "get-app", params: { source: src, branch: f.branch.value.trim() } }, {
+      onDone: (job) => { if (job.status === "success" && f.install.checked) bench("install-app", { app: name }); },
+    });
+  });
+  $("#install-app").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const cmd = e.submitter?.value || "install-app", app = e.target.app.value.trim();
+    if (cmd === "uninstall-app" && !(await confirmAction(`Uninstall ${app} from ${DOMAIN}? Its DocTypes and data are removed.`, { danger: true, okText: "Uninstall" }))) return;
+    bench(cmd, { app });
+  });
+  $("#admin-pw").addEventListener("submit", (e) => { e.preventDefault(); bench("set-admin-password", { password: e.target.password.value }, "Set admin password"); e.target.reset(); });
+
+  async function loadBackups() {
+    const box = $("#backups");
+    try {
+      const list = await api(`/api/sites/${P}/backups`);
+      box.innerHTML = list.length ? `<table><thead><tr><th>File</th><th>Size</th><th></th></tr></thead><tbody>${list.map((b) => `
+        <tr><td class="mono small">${esc(b.name)}</td><td class="muted">${esc(b.size)}</td>
+        <td style="text-align:right"><a class="btn sm" href="/api/sites/${P}/download?container=${encodeURIComponent(site.app_container)}&path=${encodeURIComponent(b.path)}">Download</a></td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty">No backups yet.</div>`;
+    } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  }
+  $("#backups-refresh").onclick = loadBackups;
+
+  /* ---------- terminal ---------- */
+  let term, fit, ws;
+  function connect() {
+    if (!window.Terminal) { toast("xterm.js failed to load (offline?)", "err"); return; }
+    if (!term) {
+      term = new Terminal({ cursorBlink: true, fontSize: 13, fontFamily: "ui-monospace, Menlo, monospace", theme: { background: "#0a0e14" } });
+      fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open($("#terminal"));
+      term.onData((d) => ws && ws.readyState === 1 && ws.send(d));
+      term.onResize(({ rows, cols }) => ws && ws.readyState === 1 && ws.send("\x00resize:" + JSON.stringify({ rows, cols })));
+      window.addEventListener("resize", () => fit.fit());
+    }
+    ws && ws.close();
+    term.reset(); fit.fit();
+    const q = new URLSearchParams({ container: $("#term-container").value, user: $("#term-user").value, mode: $("#term-mode").value });
+    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/terminal/${P}?${q}`);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => { ws.send("\x00resize:" + JSON.stringify({ rows: term.rows, cols: term.cols })); term.focus(); $("#term-disconnect").disabled = false; };
+    ws.onmessage = (ev) => term.write(typeof ev.data === "string" ? ev.data : new Uint8Array(ev.data));
+    ws.onclose = (ev) => { $("#term-disconnect").disabled = true; if (ev.code >= 4000) term.write(`\r\n\x1b[31mConnection refused (${ev.code}) - is the container running?\x1b[0m\r\n`); };
+  }
+  $("#term-connect").onclick = connect;
+  $("#term-disconnect").onclick = () => ws && ws.close();
+  document.addEventListener("tab:shown", (e) => {
+    if (e.detail === "terminal" && fit) setTimeout(() => fit.fit(), 30);
+    if (e.detail === "processes") loadProcesses();
+    if (e.detail === "apps") loadBackups();
+  });
+
+  /* ---------- files & packages ---------- */
+  $("#upload").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = e.submitter; btn.disabled = true;
+    try { const r = await api(`/api/sites/${P}/upload`, { method: "POST", body: new FormData(e.target) }); toast(`Uploaded to ${r.path}`, "ok"); }
+    catch (err) { toast(err.message, "err"); }
+    btn.disabled = false;
+  });
+  $("#download").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = e.target;
+    location.href = `/api/sites/${P}/download?container=${encodeURIComponent(f.container.value)}&path=${encodeURIComponent(f.path.value)}`;
+  });
+  $("#pkg-preset").onclick = () => { $("#packages").packages.value = "nano vim curl wget git htop tree net-tools"; };
+  $("#packages").addEventListener("submit", (e) => {
+    e.preventDefault();
+    runJob(`/api/sites/${P}/packages`, { container: e.target.container.value, packages: e.target.packages.value });
+  });
+
+  /* ---------- maintenance ---------- */
+  $("#fix-db").onclick = () => runJob(`/api/sites/${P}/fix-db`);
+  $("#fix-restart").onclick = () => runJob(`/api/sites/${P}/restart-policy`, {}, { onDone: refreshSite });
+  $("#fix-network").onclick = async () => {
+    if (await confirmAction("Re-create the traefik_proxy network? All sites lose routing for ~30 seconds.")) runJob("/api/traefik/fix-network");
+  };
+  $("#delete-site").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    if (f.confirm.value.trim() !== DOMAIN) { toast(`Type ${DOMAIN} exactly to confirm`, "err"); return; }
+    if (!(await confirmAction(`Permanently delete ${DOMAIN} including its database?`, { danger: true, okText: "Delete" }))) return;
+    runJob(`/api/sites/${P}/delete`, { confirm: f.confirm.value.trim(), remove_dev_dir: !!(f.remove_dev_dir && f.remove_dev_dir.checked) }, {
+      onDone: (job) => { if (job.status === "success") setTimeout(() => location.href = "/", 1500); },
+    });
+  });
+})();
+</script>
+{% endblock %}

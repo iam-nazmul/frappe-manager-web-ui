@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}New site · Frappe Docker Manager{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Create a new site</h1>
+    <div class="sub">Generates a 4-container stack (app · create-site · MariaDB · Redis), wires it into Traefik and creates the ERPNext site.</div></div>
+</div>
+
+<div class="grid" style="grid-template-columns:minmax(0,1fr) 320px;align-items:start" id="wizard-grid">
+<form id="new-site" class="stack" autocomplete="off">
+  <div class="card">
+    <h2><span class="section-num">1</span>Environment</h2>
+    <div class="choice-cards">
+      <label class="choice"><input type="radio" name="mode" value="local" {{ 'checked' if traefik.config.mode == 'local' }}>
+        <strong>🏠 Local development</strong><span class="muted small">HTTP on a custom port (e.g. 8081), <code>.localhost</code> domains, optional VS Code bind-mount of the apps folder.</span></label>
+      <label class="choice"><input type="radio" name="mode" value="server" {{ 'checked' if traefik.config.mode == 'server' }}>
+        <strong>🌐 VPS / server</strong><span class="muted small">Real domain on ports 80/443, Let's Encrypt SSL via Traefik, production restart policies.</span></label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="section-num">2</span>Site name</h2>
+    <div class="field">
+      <label for="domain">Domain</label>
+      <input type="text" id="domain" name="domain" placeholder="mysite.localhost" required spellcheck="false">
+      <div class="hint" id="domain-hint"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="section-num">3</span>ERPNext version</h2>
+    <div class="row" style="align-items:flex-end">
+      <div class="field" style="flex:1;margin:0">
+        <label for="version">Image tag <span class="muted small">(frappe/erpnext)</span></label>
+        <select id="version" name="version"><option>Loading versions from Docker Hub…</option></select>
+      </div>
+      <button class="btn" type="button" id="refresh-versions">↻ Refresh</button>
+    </div>
+    <div class="hint muted small" id="version-hint" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card">
+    <h2><span class="section-num">4</span>Options</h2>
+    <div class="inline-fields">
+      <div class="field"><label for="admin_password">Administrator password</label>
+        <input type="text" id="admin_password" name="admin_password" value="admin">
+        <div class="hint">Login user is <code>Administrator</code>. Change it for servers.</div></div>
+      <div class="field"><label for="web_server">Web server</label>
+        <select id="web_server" name="web_server">
+          <option value="development">Development - bench serve (auto-reload)</option>
+          <option value="production">Production - gunicorn + nginx</option>
+        </select>
+        <div class="hint" id="web-hint"></div></div>
+    </div>
+    <label class="check local-only"><input type="checkbox" name="dev_mount" checked>
+      <span>Mount the apps folder on this machine for VS Code
+        <small>Sources are copied to <code>{{ dev_root }}/&lt;site&gt;-frappe-bench/apps</code>; edits show up in the container.</small></span></label>
+    <label class="check"><input type="checkbox" name="developer_mode" id="developer_mode">
+      <span>Enable developer mode <small>Lets you create DocTypes / custom apps from the desk.</small></span></label>
+    <label class="check server-only"><input type="checkbox" name="ssl" id="ssl" {{ 'checked' if traefik.config.ssl }} {{ '' if traefik.config.ssl else 'disabled' }}>
+      <span>HTTPS with Let's Encrypt
+        <small>{% if traefik.config.ssl %}Traefik is configured with SSL ({{ traefik.config.challenge }} challenge).{% else %}Configure SSL on the <a href="/traefik">Traefik page</a> first - it needs your email and ports 80/443.{% endif %}</small></span></label>
+    <details style="margin-top:6px"><summary class="muted">Resource limits</summary>
+      <div class="inline-fields" style="margin-top:10px">
+        <div class="field"><label>App memory</label><input type="text" name="app_memory" value="2G"></div>
+        <div class="field"><label>App CPUs</label><input type="text" name="app_cpus" value="1.0"></div>
+      </div>
+    </details>
+  </div>
+
+  <div class="row">
+    <button class="btn primary" type="submit" id="create-btn">Create site</button>
+    <span class="muted small">Takes about 3-6 minutes (longer on the first image pull).</span>
+  </div>
+</form>
+
+<aside class="stack" style="position:sticky;top:20px">
+  <div class="card">
+    <h3>Summary</h3>
+    <dl class="kv small">
+      <dt>Project</dt><dd class="mono" id="sum-project">—</dd>
+      <dt>Containers</dt><dd class="mono" id="sum-containers">—</dd>
+      <dt>URL</dt><dd id="sum-url">—</dd>
+      <dt>Traefik</dt><dd>{% if traefik.running %}<span class="pill ok">running :{{ traefik.http_port }}</span>{% else %}<span class="pill warn">will be installed</span>{% endif %}</dd>
+    </dl>
+  </div>
+  <div class="card small muted">
+    <strong style="color:var(--text)">What happens</strong>
+    <ol style="padding-left:18px;margin:8px 0 0">
+      <li>Traefik proxy + <code>traefik_proxy</code> network ensured</li>
+      <li>Images pulled</li>
+      <li>Compose file, <code>.env</code> (random DB/Redis passwords) &amp; supervisor config written</li>
+      <li><code>bench new-site</code> with ERPNext installed</li>
+      <li>App container started; health &amp; routing verified</li>
+    </ol>
+  </div>
+</aside>
+</div>
+
+<div class="card" id="progress" style="display:none;margin-top:16px">
+  <div class="card-head"><h2 id="progress-title">Creating site…</h2><span class="pill running" id="progress-status">running</span></div>
+  <div class="console" id="progress-console" style="max-height:58vh"></div>
+  <div id="progress-done" style="margin-top:14px"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const { $, $$, esc, api, toast, streamJob } = FDM;
+  const form = $("#new-site");
+  const traefikPort = {{ traefik.http_port | tojson }};
+  const traefikRunning = {{ traefik.running | tojson }};
+  const localPortGuess = traefikRunning ? traefikPort : ({{ traefik.config.http_port | tojson }} || 8081);
+
+  const mode = () => form.mode.value;
+  const safe = (d) => d.toLowerCase().replace(/[^a-z0-9]/g, "_");
+
+  function update() {
+    const m = mode();
+    $$(".local-only").forEach((el) => el.style.display = m === "local" ? "" : "none");
+    $$(".server-only").forEach((el) => el.style.display = m === "server" ? "" : "none");
+    const d = form.domain.value.trim().toLowerCase();
+    form.domain.placeholder = m === "local" ? "mysite.localhost" : "erp.example.com";
+    const hint = $("#domain-hint");
+    if (m === "local") {
+      hint.innerHTML = d && !d.endsWith(".localhost")
+        ? "⚠️ Non-<code>.localhost</code> domains need an <code>/etc/hosts</code> entry (the site page shows the command)."
+        : "<code>.localhost</code> domains resolve to 127.0.0.1 automatically - no hosts file edits.";
+    } else {
+      hint.innerHTML = "Point the domain's DNS A record at this server before enabling SSL.";
+    }
+    const p = d ? safe(d) : "";
+    $("#sum-project").textContent = p || "—";
+    $("#sum-containers").innerHTML = p ? ["app", "create-site", "db", "redis"].map((s) => esc(`${p}-${s}`)).join("<br>") : "—";
+    const ssl = m === "server" && form.ssl.checked;
+    const port = m === "server" ? 80 : localPortGuess;
+    $("#sum-url").textContent = d ? (ssl ? `https://${d}` : `http://${d}${port === 80 ? "" : ":" + port}`) : "—";
+  }
+  form.addEventListener("input", update);
+  form.addEventListener("change", (e) => {
+    if (e.target.name === "mode") { form.web_server.value = mode() === "server" ? "production" : "development"; webHint(); }
+    update();
+  });
+  const webHint = () => {
+    $("#web-hint").textContent = form.web_server.value === "production"
+      ? "Image's nginx serves assets; gunicorn runs the app. Use for anything internet-facing."
+      : "Werkzeug dev server with debugger pages - never expose it to the internet.";
+  };
+  form.web_server.addEventListener("change", webHint);
+  form.web_server.value = mode() === "server" ? "production" : "development";
+  webHint();
+  update();
+
+  async function loadVersions(refresh = false) {
+    const sel = form.version;
+    sel.disabled = true;
+    try {
+      const data = await api(`/api/versions${refresh ? "?refresh=true" : ""}`);
+      sel.innerHTML = data.versions.map((v, i) => `<option value="${esc(v)}">${esc(v)}${i === 0 ? "  (latest)" : ""}</option>`).join("");
+      $("#version-hint").textContent = data.source === "docker-hub"
+        ? `${data.versions.length} versions from Docker Hub. Newest is selected; pick an older one for a known-stable release.`
+        : "Docker Hub unreachable - showing a built-in list of known versions.";
+    } catch (e) { toast(e.message, "err"); }
+    sel.disabled = false;
+  }
+  $("#refresh-versions").onclick = () => loadVersions(true);
+  loadVersions();
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const body = Object.fromEntries(fd.entries());
+    for (const k of ["dev_mount", "developer_mode", "ssl"]) body[k] = fd.has(k);
+    const btn = $("#create-btn");
+    btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Starting…';
+    try {
+      const res = await api("/api/sites", { method: "POST", body });
+      $("#progress").style.display = "";
+      $("#progress-title").textContent = res.title;
+      $("#progress").scrollIntoView({ behavior: "smooth" });
+      $$("input,select,button", form).forEach((el) => el.disabled = true);
+      btn.innerHTML = '<span class="spin"></span> Creating…';
+      streamJob(res.job_id, $("#progress-console"), {
+        onStatus: (s) => { const p = $("#progress-status"); p.className = `pill ${s}`; p.textContent = s; },
+        onDone: (job) => {
+          btn.innerHTML = "Create site";
+          if (job.status === "success") {
+            const r = job.result;
+            $("#progress-done").innerHTML = `<div class="callout ok"><strong>🎉 Site ready.</strong> Log in as <code>Administrator</code> with the password you chose.</div>
+              <div class="row"><a class="btn primary" href="${esc(r.url)}" target="_blank">Open ${esc(r.url)} ↗</a>
+              <a class="btn" href="/sites/${esc(r.project)}">Manage site</a></div>`;
+          } else {
+            $("#progress-done").innerHTML = `<div class="callout err">Setup failed - read the red lines above. Fix the cause, delete the half-created site from the dashboard if it is listed, then try again.</div>
+              <div class="row"><button class="btn" onclick="location.reload()">Start over</button><a class="btn" href="/">Dashboard</a></div>`;
+          }
+        },
+      });
+    } catch (err) {
+      toast(err.message, "err");
+      btn.disabled = false; btn.textContent = "Create site";
+    }
+  });
+})();
+</script>
+{% endblock %}

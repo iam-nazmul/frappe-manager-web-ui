@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Tools · Frappe Docker Manager{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Tools</h1><div class="sub">Docker-wide maintenance and diagnostics.</div></div></div>
+<div class="grid cols-2" style="align-items:start">
+  <div class="stack">
+    <div class="card">
+      <div class="card-head"><h2>Repair proxy network</h2><button class="btn" id="fix-network">Run</button></div>
+      <p class="small muted">Same as <code>fix-traefik-network.sh</code>: re-creates <code>traefik_proxy</code> and reconnects all sites and Traefik.</p>
+    </div>
+    <div class="card tight">
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)"><h2 style="margin:0">Docker networks</h2></div>
+      <table><thead><tr><th>Name</th><th>Driver</th><th>Scope</th></tr></thead><tbody>
+      {% for n in networks %}<tr><td class="mono small">{{ n[0] }}</td><td class="muted">{{ n[1] if n|length > 1 }}</td><td class="muted">{{ n[2] if n|length > 2 }}</td></tr>{% endfor %}
+      </tbody></table>
+    </div>
+  </div>
+  <div class="stack">
+    <div class="card"><h2>Disk usage</h2><pre class="code">{{ df }}</pre></div>
+    <div class="card">
+      <h2>Saved task logs</h2>
+      {% if logs %}<ul class="small mono" style="margin:0;padding-left:18px">{% for l in logs %}<li>{{ l.name }}</li>{% endfor %}</ul>
+      <p class="muted small" style="margin-top:8px">in {{ config.JOBS_DIR }}</p>
+      {% else %}<p class="muted small">None yet.</p>{% endif %}
+    </div>
+    <div class="card small">
+      <h2>CLI equivalents</h2>
+      <p class="muted">The original scripts still work alongside the UI, and sites they created appear on the dashboard (marked CLI).</p>
+      <ul style="margin:0;padding-left:18px">
+        <li><code>docker-manager.sh</code> → site page tabs</li>
+        <li><code>generate_frappe_docker*.sh</code> → New site</li>
+        <li><code>setup-traefik-local*.sh</code> → Traefik page</li>
+        <li><code>fix-db-permissions.sh</code> → Site → Maintenance</li>
+      </ul>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+FDM.$("#fix-network").onclick = async () => { if (await FDM.confirmAction("Re-create traefik_proxy? All sites pause ~30 seconds.")) FDM.runJob("/api/traefik/fix-network"); };
+</script>
+{% endblock %}

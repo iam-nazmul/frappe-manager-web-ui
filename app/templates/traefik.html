@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Traefik · Frappe Docker Manager{% endblock %}
+{% block content %}
+{% set cfg = traefik.config %}
+<div class="page-head">
+  <div><h1>Traefik reverse proxy</h1><div class="sub">One shared proxy routes every site by host name over the <code>traefik_proxy</code> network.</div></div>
+  <div class="row">
+    {% if traefik.exists %}
+      <button class="btn" data-t="restart">↻ Restart</button>
+      {% if traefik.running %}<button class="btn" data-t="stop">■ Stop</button>{% else %}<button class="btn primary" data-t="start">▶ Start</button>{% endif %}
+      <a class="btn" href="{{ traefik.dashboard_url }}" target="_blank">Dashboard ↗</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid cols-3" style="margin-bottom:16px">
+  <div class="card stat"><div class="label"><span class="dot {{ 'on' if traefik.running else ('mid' if traefik.exists else 'off') }}"></span>Status</div>
+    <div class="value">{{ 'Running' if traefik.running else ('Stopped' if traefik.exists else 'Not installed') }}</div>
+    <div class="muted small mono">{{ traefik.image or '—' }}</div></div>
+  <div class="card stat"><div class="label">Entrypoints</div>
+    <div class="value">{% if traefik.exists %}:{{ traefik.http_port }}{{ ' · :443' if traefik.live_https }}{% else %}—{% endif %}</div>
+    <div class="muted small">HTTP{{ ' + HTTPS (Let\'s Encrypt)' if traefik.live_https }}</div></div>
+  <div class="card stat"><div class="label"><span class="dot {{ 'on' if traefik.network else 'off' }}"></span>Network</div>
+    <div class="value">traefik_proxy</div><div class="muted small">{{ 'present' if traefik.network else 'missing - will be created' }}</div></div>
+</div>
+
+{% if traefik.exists and traefik.foreign %}
+<div class="callout warn">This Traefik container was created outside the UI (e.g. by <code>setup-traefik-local*.sh</code>). It works as-is; applying the form below replaces it with a UI-managed one on the chosen ports (sites keep running).</div>
+{% endif %}
+{% if traefik.image and ('v2.' in traefik.image or traefik.image.endswith(':v2')) %}
+<div class="callout err">Traefik <strong>{{ traefik.image }}</strong> cannot talk to Docker Engine 29+ (minimum API 1.44). If routing is broken, apply the form below to upgrade to <code>{{ config.TRAEFIK_IMAGE }}</code>.</div>
+{% endif %}
+
+<div class="grid cols-2" style="align-items:start">
+<form class="card" id="setup">
+  <h2>{{ 'Reconfigure' if traefik.exists else 'Install' }} Traefik</h2>
+  <div class="choice-cards" style="margin-bottom:14px">
+    <label class="choice"><input type="radio" name="mode" value="local" {{ 'checked' if cfg.mode == 'local' }}><strong>🏠 Local</strong><span class="muted small">Custom HTTP port, no SSL</span></label>
+    <label class="choice"><input type="radio" name="mode" value="server" {{ 'checked' if cfg.mode == 'server' }}><strong>🌐 VPS / server</strong><span class="muted small">Port 80 (+443 with SSL)</span></label>
+  </div>
+  <div class="inline-fields">
+    <div class="field"><label>HTTP port</label>
+      <div class="row" style="flex-wrap:nowrap"><input type="number" name="http_port" value="{{ cfg.http_port }}" min="1" max="65535">
+        <button class="btn sm" type="button" id="suggest" title="Find a free port">Find free</button></div>
+      <div class="hint local-hint">Suggested free port: <strong>{{ suggested_port or 'none in 8081-8099' }}</strong>. macOS often reserves port 80.</div></div>
+    <div class="field"><label>Dashboard port</label><input type="number" name="dashboard_port" value="{{ cfg.dashboard_port }}" min="1" max="65535">
+      <div class="hint">Bound to 127.0.0.1 only.</div></div>
+  </div>
+  <div class="server-only">
+    <label class="check"><input type="checkbox" name="ssl" {{ 'checked' if cfg.ssl }}><span>Enable HTTPS (Let's Encrypt)<small>HTTP is redirected to HTTPS for sites created with SSL.</small></span></label>
+    <div class="ssl-only">
+      <div class="field"><label>Email for Let's Encrypt</label><input type="email" name="email" value="{{ cfg.email }}" placeholder="you@example.com"></div>
+      <div class="field"><label>Certificate challenge</label>
+        <select name="challenge">
+          <option value="http" {{ 'selected' if cfg.challenge == 'http' }}>HTTP-01 - works with any DNS provider (needs port 80 open)</option>
+          <option value="cloudflare" {{ 'selected' if cfg.challenge == 'cloudflare' }}>DNS-01 via Cloudflare API token</option>
+        </select></div>
+      <div class="field cf-only"><label>Cloudflare API token <span class="muted small">(Zone → DNS → Edit)</span></label>
+        <input type="password" name="cf_token" placeholder="{{ 'saved - leave blank to keep' if has_cf_token else 'paste token' }}" autocomplete="off"></div>
+      <label class="check"><input type="checkbox" name="staging" {{ 'checked' if cfg.staging }}><span>Use Let's Encrypt staging<small>For testing - avoids rate limits, certificates are untrusted.</small></span></label>
+    </div>
+  </div>
+  <button class="btn primary" style="margin-top:6px">{{ 'Apply & restart Traefik' if traefik.exists else 'Install Traefik' }}</button>
+</form>
+
+<div class="stack">
+  <div class="card">
+    <div class="card-head"><h2>Logs</h2><button class="btn sm" id="load-logs">Load</button></div>
+    <div class="console" id="tlogs" style="min-height:200px;max-height:360px">Press Load.</div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Network repair</h2><button class="btn sm" id="fix-network">Repair</button></div>
+    <p class="small muted">Fixes <code>ERR_NETWORK_CHANGED</code> / 502 errors caused by a broken <code>traefik_proxy</code> network: disconnects everything, re-creates it and reconnects all sites (~30s downtime).</p>
+  </div>
+  {% if compose %}<details class="card"><summary><strong>Generated compose file</strong></summary><pre class="code" style="margin-top:10px">{{ compose }}</pre></details>{% endif %}
+</div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const { $, $$, api, toast, runJob, confirmAction } = FDM;
+  const f = $("#setup");
+  function update() {
+    const server = f.mode.value === "server";
+    $$(".server-only").forEach((e) => e.style.display = server ? "" : "none");
+    $$(".local-hint").forEach((e) => e.style.display = server ? "none" : "");
+    $$(".ssl-only").forEach((e) => e.style.display = server && f.ssl.checked ? "" : "none");
+    $$(".cf-only").forEach((e) => e.style.display = f.challenge.value === "cloudflare" ? "" : "none");
+  }
+  f.addEventListener("change", (e) => {
+    if (e.target.name === "mode") f.http_port.value = e.target.value === "server" ? 80 : ({{ suggested_port or 8081 }});
+    update();
+  });
+  update();
+  $("#suggest").onclick = async () => { const r = await api("/api/ports/suggest?start=8081"); if (r.port) f.http_port.value = r.port; else toast("No free port in 8081-8111", "err"); };
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(f), body = Object.fromEntries(fd.entries());
+    body.ssl = fd.has("ssl"); body.staging = fd.has("staging");
+    if (!(await confirmAction("Traefik will be (re)started. Every site is briefly unreachable while it restarts. Continue?"))) return;
+    runJob("/api/traefik/setup", body, { onDone: (j) => { if (j.status === "success") setTimeout(() => location.reload(), 1200); } });
+  });
+  $$("[data-t]").forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    try { const r = await api(`/api/traefik/${b.dataset.t}`, { method: "POST" }); toast(r.ok ? `Traefik ${b.dataset.t}ed` : r.output, r.ok ? "ok" : "err"); setTimeout(() => location.reload(), 800); }
+    catch (e) { toast(e.message, "err"); b.disabled = false; }
+  });
+  $("#load-logs").onclick = async () => { const el = $("#tlogs"); el.textContent = await api("/api/traefik/logs?lines=300"); el.scrollTop = el.scrollHeight; };
+  $("#fix-network").onclick = async () => { if (await confirmAction("Re-create traefik_proxy and reconnect every site?")) runJob("/api/traefik/fix-network"); };
+})();
+</script>
+{% endblock %}

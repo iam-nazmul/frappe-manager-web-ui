@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Frappe Docker Manager{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Dashboard</h1><div class="sub">Frappe / ERPNext sites running in Docker on this machine</div></div>
+  <a class="btn primary" href="/sites/new">+ New site</a>
+</div>
+
+{% if not info.ok %}
+<div class="callout err"><strong>Docker is not reachable.</strong> {{ info.error }}<br>
+  Start Docker Desktop (macOS) or the docker service (Linux), then reload this page.</div>
+{% endif %}
+
+<div class="grid cols-3" style="margin-bottom:16px">
+  <div class="card stat">
+    <div class="label"><span class="dot {{ 'on' if info.ok else 'off' }}"></span>Docker engine</div>
+    <div class="value">{{ info.server_version or 'offline' }}</div>
+    <div class="muted small">{% if info.ok %}Compose {{ info.compose_version or '—' }} · {{ info.containers_running }}/{{ info.containers }} containers running · {{ info.cpus }} CPU · {{ info.mem_gb }} GB{% else %}not running{% endif %}</div>
+  </div>
+  <div class="card stat">
+    <div class="label"><span class="dot {{ 'on' if traefik.running else ('mid' if traefik.exists else 'off') }}"></span>Traefik proxy</div>
+    <div class="value">{{ 'Running' if traefik.running else ('Stopped' if traefik.exists else 'Not installed') }}</div>
+    <div class="muted small">
+      {% if traefik.running %}HTTP port {{ traefik.http_port }}{{ ' + HTTPS 443' if traefik.live_https }} · <a href="{{ traefik.dashboard_url }}" target="_blank">dashboard ↗</a>
+      {% else %}<a href="/traefik">Set up Traefik →</a> (also done automatically when you create a site){% endif %}
+    </div>
+  </div>
+  <div class="card stat">
+    <div class="label">Sites</div>
+    <div class="value" id="site-count">{{ sites|length }}</div>
+    <div class="muted small">Network <code>traefik_proxy</code>: {{ 'present' if traefik.network else 'missing (created on demand)' }}</div>
+  </div>
+</div>
+
+<div class="card tight">
+  <div class="row between" style="padding:14px 16px;border-bottom:1px solid var(--border)">
+    <h2 style="margin:0">Sites</h2>
+    <span class="muted small" id="refresh-note">auto-refreshes every 10s</span>
+  </div>
+  <div id="sites-table"></div>
+</div>
+
+{% if jobs %}
+<div class="card tight" style="margin-top:16px">
+  <div style="padding:14px 16px;border-bottom:1px solid var(--border)"><h2 style="margin:0">Recent tasks</h2></div>
+  <table>
+    <thead><tr><th>Task</th><th>Status</th><th class="hide-sm">Started</th><th class="hide-sm">Duration</th></tr></thead>
+    <tbody>
+    {% for j in jobs %}{% set d = j.as_dict() %}
+      <tr><td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td><td><span class="pill {{ j.status }}">{{ j.status }}</span></td>
+        <td class="hide-sm muted">{{ d.started }}</td><td class="hide-sm muted">{{ d.duration }}s</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const { $, esc, api, runJob, toast } = FDM;
+  const stateClass = (s) => ({ running: "running", stopped: "stopped", unhealthy: "unhealthy", starting: "starting" }[s] || "");
+
+  function render(list) {
+    $("#site-count").textContent = list.length;
+    if (!list.length) {
+      $("#sites-table").innerHTML = `<div class="empty"><p><strong>No sites yet.</strong></p>
+        <p>Create your first ERPNext site - Traefik, network, database and Redis are set up for you.</p>
+        <a class="btn primary" href="/sites/new">+ Create a site</a></div>`;
+      return;
+    }
+    $("#sites-table").innerHTML = `<table><thead><tr><th>Site</th><th>Status</th><th class="hide-sm">Version</th>
+      <th class="hide-sm">Containers</th><th></th></tr></thead><tbody>${list.map((s) => `
+      <tr>
+        <td><a class="domain" href="/sites/${esc(s.project)}">${esc(s.domain)}</a><br>
+          <a class="small" href="${esc(s.url)}" target="_blank">${esc(s.url)} ↗</a>
+          ${s.managed ? "" : ' <span class="pill plain small" title="Created by the CLI scripts">CLI</span>'}</td>
+        <td><span class="pill ${stateClass(s.state)}">${esc(s.state)}</span></td>
+        <td class="hide-sm mono">${esc(s.version)}</td>
+        <td class="hide-sm">${s.containers.map((c) => `<span class="dot ${c.running ? (c.health === "unhealthy" ? "mid" : "on") : (c.service === "create-site" && c.exit_code === 0 ? "" : "off")}" title="${esc(c.name)}: ${esc(c.state)}${c.health ? " (" + esc(c.health) + ")" : ""}"></span>`).join(" ")}</td>
+        <td style="text-align:right;white-space:nowrap">
+          ${s.state === "running" || s.state === "starting" || s.state === "unhealthy"
+            ? `<button class="btn sm" data-act="stop" data-p="${esc(s.project)}">Stop</button>`
+            : `<button class="btn sm" data-act="start" data-p="${esc(s.project)}">Start</button>`}
+          <a class="btn sm" href="/sites/${esc(s.project)}">Manage</a></td>
+      </tr>`).join("")}</tbody></table>`;
+  }
+
+  async function refresh() {
+    try { const st = await api("/api/status"); render(st.sites); }
+    catch (e) { $("#refresh-note").textContent = "refresh failed: " + e.message; }
+  }
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-act]");
+    if (!b) return;
+    runJob(`/api/sites/${b.dataset.p}/containers/${b.dataset.act}`, {}, { onDone: refresh });
+  });
+  render({{ sites | tojson }});
+  setInterval(refresh, 10000);
+})();
+</script>
+{% endblock %}
