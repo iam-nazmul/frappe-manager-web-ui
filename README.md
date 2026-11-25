@@ -59,6 +59,18 @@ The site is online only while this machine is running. You don't need to install
 
 On a Mac, the same steps work with Docker Desktop. Turn on "Start Docker Desktop when you sign in", and remember that the site goes offline while the Mac sleeps. A hostname can be published from only one machine at a time; publishing it elsewhere moves its DNS record there.
 
+## Apps from private GitHub repositories
+
+1. Create a token at <https://github.com/settings/personal-access-tokens/new>: choose the repository, and under
+   Repository permissions set **Contents: Read-only**. A classic token with the `repo` scope also works.
+2. On the site's **Apps & bench** tab, paste the repository's HTTPS URL (e.g. `https://github.com/your-org/your_app`),
+   paste the token, and press **Get app**. Tick "Remember token on this machine" to skip pasting it next time.
+
+The token is sent only to GitHub. It isn't written into the app's git settings, task logs or the page. A saved token is
+stored in `~/frappe-docker-manager/git-tokens.json` (readable only by you); remove it with "Forget saved token".
+SSH URLs (`git@github.com:…`) are converted to HTTPS, because the ERPNext image has no SSH client.
+Because the token isn't kept in the app's git settings, later `bench update` pulls of a private app need it again.
+
 ## Generated stack (per site)
 
 Same 4-container layout as the scripts, written to `~/frappe-docker-manager/sites/<site_name>/`:

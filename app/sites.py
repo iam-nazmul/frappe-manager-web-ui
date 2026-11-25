@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -21,12 +22,48 @@ PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 APP_RE = re.compile(r"^[a-z][a-z0-9_]{1,60}$")
 GIT_URL_RE = re.compile(r"^(https://[\w.\-]+/[\w.\-/~]+?(\.git)?|git@[\w.\-]+:[\w.\-/~]+?(\.git)?)$")
 BRANCH_RE = re.compile(r"^[\w.\-/]{1,100}$")
+TOKEN_RE = re.compile(r"^[A-Za-z0-9_]{20,255}$")
+TOKENS_FILE = config.DATA_DIR / "git-tokens.json"
 PKG_RE = re.compile(r"^[a-z0-9][a-z0-9+.\-]{0,80}$")
 PROGRESS_RE = re.compile(r"^(.*?):?\s*\[[=\s]*\]\s*(\d+)%\s*$")
 PROCESS_RE = re.compile(r"^(all|frappe:[a-z0-9_-]+|[a-z0-9_-]+)$")
 SERVICES = ("app", "create-site", "db", "redis")
 PROGRAMS = ["frappe-web", "frappe-schedule", "frappe-worker-short", "frappe-worker-long",
             "frappe-worker-default", "frappe-websocket"]
+
+
+def _git_tokens() -> dict:
+    try:
+        return json.loads(TOKENS_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def git_token(host: str) -> str:
+    return _git_tokens().get(host, "")
+
+
+def save_git_token(host: str, token: str) -> None:
+    tokens = {**_git_tokens(), host: token}
+    TOKENS_FILE.touch(mode=0o600, exist_ok=True)
+    TOKENS_FILE.chmod(0o600)
+    TOKENS_FILE.write_text(json.dumps(tokens, indent=2))
+
+
+def forget_git_token(host: str) -> None:
+    tokens = _git_tokens()
+    if tokens.pop(host, None) is not None:
+        if tokens:
+            TOKENS_FILE.write_text(json.dumps(tokens, indent=2))
+        else:
+            TOKENS_FILE.unlink(missing_ok=True)
+
+
+def _git_auth_env(host: str, token: str) -> dict:
+    """Git config passed through the environment: an auth header that never lands in URLs or .git/config."""
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": f"http.https://{host}/.extraheader",
+            "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}"}
 
 
 def safe_name(domain: str) -> str:
@@ -622,6 +659,7 @@ async def bench(site: dict, job: Job, command: str, params: dict) -> dict:
     base = [d, "exec", "-w", config.BENCH_DIR, app, "bench"]
     on_site = [*base, "--site", domain]
     restart_after = False
+    git_env: dict = {}
     if command == "list-apps":
         cmd = [*on_site, "list-apps"]
     elif command == "migrate":
@@ -653,7 +691,27 @@ async def bench(site: dict, job: Job, command: str, params: dict) -> dict:
             raise JobError("App must be an app name (e.g. hrms) or a git URL (https://… or git@…)")
         if branch and not BRANCH_RE.match(branch):
             raise JobError("Invalid branch name")
+        token = (params.get("token") or "").strip()
+        if token and not TOKEN_RE.match(token):
+            raise JobError("That doesn't look like a GitHub token (ghp_… or github_pat_…)")
+        ssh = re.match(r"^git@([\w.\-]+):(.+?)(\.git)?$", src)
+        if ssh:
+            src = f"https://{ssh.group(1)}/{ssh.group(2)}.git"
+            await job.log(f"Using {src} - the image has no ssh client, so SSH URLs are cloned over HTTPS")
+        host = re.match(r"^https://([\w.\-]+)/", src)
+        host = host.group(1).lower() if host else ""
+        if token and not host:
+            raise JobError("A token needs a full https:// repository URL")
+        if token and params.get("remember"):
+            save_git_token(host, token)
+            await job.log(f"Saved the token for {host}")
+        token = token or (git_token(host) if host else "")
+        if token:
+            await job.log(f"Authenticating to {host} with a token")
+            git_env = _git_auth_env(host, token)
         cmd = [*base, "get-app", *(["--branch", branch] if branch else []), src]
+        # Only the variable names go on the command line; docker copies the values from our environment.
+        cmd[2:2] = ["-e", "GIT_TERMINAL_PROMPT=0", *(x for k in git_env for x in ("-e", k))]
         restart_after = True
         install_after = bool(params.get("install"))
         guess = re.sub(r"\.git$", "", src.rstrip("/")).split("/")[-1].split(":")[-1].replace("-", "_").lower()
@@ -673,7 +731,12 @@ async def bench(site: dict, job: Job, command: str, params: dict) -> dict:
         raise JobError(f"Unknown bench command {command}")
 
     if cmd:
-        await _run_bench(job, cmd, command)
+        try:
+            await _run_bench(job, cmd, command, env=git_env)
+        except JobError:
+            if command == "get-app" and host == "github.com" and not git_env:
+                await job.warn("Private repository? Add a GitHub token with Contents: read access and try again.")
+            raise
     if command == "get-app":
         await docker.docker("exec", "-w", config.BENCH_DIR, app, "bash", "-c", "ls -1 apps > sites/apps.txt")
         if install_after:
@@ -692,9 +755,9 @@ async def bench(site: dict, job: Job, command: str, params: dict) -> dict:
     return {}
 
 
-async def _run_bench(job: Job, cmd: list[str], command: str) -> None:
+async def _run_bench(job: Job, cmd: list[str], command: str, env: dict | None = None) -> None:
     await job.step("$ " + " ".join(cmd[cmd.index("bench"):]))
-    code = await docker.stream(cmd, job.log)
+    code = await docker.stream(cmd, job.log, env=env)
     if code != 0:
         if command == "install-app":
             await job.warn("If this failed with 'Access denied', run 'Fix DB permissions' and try again.")

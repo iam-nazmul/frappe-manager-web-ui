@@ -79,6 +79,7 @@ async def site_page(request: Request, project: str):
     site = await require_site(project)
     return page(request, "site_detail.html", site=site, hosts=sites.hosts_status(site["domain"]),
                 tunnel=tunnel.load_state(), tunnel_ready=tunnel.cert_path().exists(),
+                has_github_token=bool(sites.git_token("github.com")),
                 bench_commands=sites.BENCH_COMMANDS, log_sources=list(sites.LOG_SOURCES),
                 jobs=jobs.recent(10, project), running_job=jobs.running_for(project))
 
@@ -402,6 +403,12 @@ async def api_apps(project: str):
         return await sites.list_apps(site)
     except RuntimeError as exc:
         return bad(str(exc), 502)
+
+
+@app.post("/api/git-token/forget")
+async def api_git_token_forget(request: Request):
+    sites.forget_git_token(str((await request.json()).get("host", "github.com")).lower())
+    return {"ok": True}
 
 
 @app.get("/api/sites/{project}/backups")

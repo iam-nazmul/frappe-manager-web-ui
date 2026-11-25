@@ -137,6 +137,13 @@
           <input type="text" name="source" placeholder="hrms   or   https://github.com/frappe/hrms" required spellcheck="false"></div>
         <div class="field"><label>Branch <span class="muted small">(optional, e.g. version-15)</span></label>
           <input type="text" name="branch" placeholder="version-15" spellcheck="false"></div>
+        <div class="field"><label>GitHub token <span class="muted small">(private repos only · <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">create one ↗</a> with Contents: Read-only)</span></label>
+          <input type="password" name="token" autocomplete="off" spellcheck="false"
+            placeholder="{{ 'Saved token will be used - paste a new one to replace it' if has_github_token else 'ghp_… or github_pat_…' }}">
+          <div class="row small" style="margin-top:6px;gap:14px">
+            <label class="check" style="margin:0"><input type="checkbox" name="remember"><span>Remember token on this machine</span></label>
+            {% if has_github_token %}<a href="#" id="forget-token" class="muted">Forget saved token</a>{% endif %}
+          </div></div>
         <label class="check"><input type="checkbox" name="install" checked><span>Install on {{ site.domain }} after download</span></label>
         <button class="btn primary">Get app</button>
       </form>
@@ -390,9 +397,16 @@
     e.preventDefault();
     const f = e.target, src = f.source.value.trim();
     // Download and install run as one server-side task, so closing this page doesn't skip the install.
-    runJob(`/api/sites/${P}/bench`, { command: "get-app", params: { source: src, branch: f.branch.value.trim(), install: f.install.checked } }, {
-      onDone: () => loadApps(),
-    });
+    const params = { source: src, branch: f.branch.value.trim(), install: f.install.checked,
+                     token: f.token.value.trim(), remember: f.remember.checked };
+    f.token.value = "";
+    runJob(`/api/sites/${P}/bench`, { command: "get-app", params }, { onDone: () => loadApps() });
+  });
+  $("#forget-token")?.addEventListener("click", async (e) => {
+    e.preventDefault();
+    await api("/api/git-token/forget", { method: "POST", body: { host: "github.com" } });
+    toast("Saved GitHub token removed", "ok");
+    setTimeout(() => location.reload(), 600);
   });
   $("#install-app").addEventListener("submit", async (e) => {
     e.preventDefault();
