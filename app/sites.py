@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import config, docker, traefik, tunnel, versions
+from . import config, docker, servers, traefik, tunnel, versions
 from .jobs import Job, JobError
 
 DOMAIN_RE = re.compile(r"^(?=.{4,200}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$")
@@ -229,7 +229,7 @@ def validate_new(form: dict) -> dict:
         "version": version,
         "mode": mode,
         "ssl": bool(form.get("ssl")) and mode == "server",
-        "dev_mount": bool(form.get("dev_mount")) and mode == "local",
+        "dev_mount": bool(form.get("dev_mount")) and mode == "local" and servers.current().local,
         "developer_mode": bool(form.get("developer_mode")),
         "admin_password": admin_password,
         "install_apps": apps,
@@ -239,11 +239,21 @@ def validate_new(form: dict) -> dict:
     }
 
 
+def remote_site_dir(project: str) -> str:
+    return f"{servers.current().remote_root}/sites/{project}"
+
+
+def supervisor_dir(project: str) -> str:
+    """Bind-mount source for the supervisor config, as a path on the server that runs the site."""
+    return "./supervisor" if servers.current().local else f"{remote_site_dir(project)}/supervisor"
+
+
 def render_site_files(opts: dict, apps_dir: str) -> dict[str, str]:
     env = traefik.yaml_env
     m = re.search(r":(\d+)", config.MARIADB_IMAGE)
     production = opts.get("web_server", "development") == "production"
-    ctx = dict(opts, apps_dir=apps_dir, mariadb_image=config.MARIADB_IMAGE, redis_image=config.REDIS_IMAGE,
+    ctx = dict(opts, apps_dir=apps_dir, supervisor_dir=supervisor_dir(opts["project"]),
+               mariadb_image=config.MARIADB_IMAGE, redis_image=config.REDIS_IMAGE,
                mariadb_major=int(m.group(1)) if m else 11, web_port=8080 if production else 8000)
     web_cmd = ("/home/frappe/frappe-bench/env/bin/gunicorn --chdir=/home/frappe/frappe-bench/sites "
                "--bind=0.0.0.0:8000 --threads=4 --workers=2 --worker-class=gthread "
@@ -312,12 +322,13 @@ async def create(job: Job, opts: dict) -> dict:
             tst = await traefik.status()
         if not tst["running"]:
             cfg = traefik.load_config()
-            if not traefik.CONFIG_FILE.exists():
+            if not traefik.config_file().exists():
                 cfg["mode"] = opts["mode"]
                 if opts["mode"] == "server":
                     cfg["http_port"] = 80
                 else:
-                    cfg["http_port"] = traefik.suggest_port(8081, 8099, {cfg["dashboard_port"]}) or 8081
+                    cfg["http_port"] = ((traefik.suggest_port(8081, 8099, {cfg["dashboard_port"]}) or 8081)
+                                        if servers.current().local else 8081)
             if opts["ssl"] and not cfg["ssl"]:
                 raise JobError("SSL requested but Traefik isn't configured for HTTPS. Set it up on the Traefik page first.")
             await job.log(f"Auto-installing Traefik ({cfg['mode']} mode, HTTP port {cfg['http_port']})")
@@ -388,6 +399,10 @@ async def create(job: Job, opts: dict) -> dict:
     r = await compose(project, "config", "--quiet")
     if not r.ok:
         raise JobError(f"Generated compose file is invalid: {r.text}")
+    srv = servers.current()
+    if not srv.local:
+        await job.step(f"Copying the supervisor config to {srv.name}:{supervisor_dir(project)}")
+        await servers.upload_dir(srv, d / "supervisor", supervisor_dir(project))
 
     await job.step("Starting database & redis, then creating the site (3-6 minutes)")
     code = await compose(project, "up", "-d", "create-site", on_line=job.log)
@@ -449,7 +464,10 @@ async def create(job: Job, opts: dict) -> dict:
     tst = await traefik.status()
     url = traefik.site_url(domain, opts["ssl"], tst["http_port"])
     await job.step("Checking routing through Traefik")
-    ok = await asyncio.to_thread(_probe_traefik, domain, tst["http_port"])
+    if servers.current().local:
+        ok = await asyncio.to_thread(_probe_traefik, domain, tst["http_port"])
+    else:
+        ok = await _probe_traefik_remote(app, domain)
     if ok:
         await job.ok(f"Traefik routes {domain} correctly")
     else:
@@ -484,10 +502,22 @@ def _probe_traefik(domain: str, port: int) -> bool:
     return False
 
 
+async def _probe_traefik_remote(app_container: str, domain: str) -> bool:
+    """On a remote server, ask Traefik from the app container (both are on traefik_proxy)."""
+    for _ in range(6):
+        r = await docker.docker("exec", app_container, "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                                "-H", f"Host: {domain}", f"http://{config.TRAEFIK_CONTAINER}/api/method/ping",
+                                timeout=20)
+        if r.out.strip() in ("200", "301", "302", "308"):
+            return True
+        await asyncio.sleep(3)
+    return False
+
+
 # --------------------------------------------------------------------------- hosts file
 
 def hosts_status(domain: str) -> dict:
-    needed = not domain.endswith(".localhost")
+    needed = not domain.endswith(".localhost") and servers.current().local
     present = False
     try:
         for line in Path("/etc/hosts").read_text().splitlines():
@@ -571,6 +601,10 @@ async def delete(site: dict, job: Job, remove_dev_dir: bool) -> dict:
     if d.exists() and d.resolve().is_relative_to(config.SITES_DIR.resolve()):
         shutil.rmtree(d)
         await job.ok(f"Removed {d}")
+    srv = servers.current()
+    if not srv.local and PROJECT_RE.match(project):
+        await servers.remove_remote_dir(srv, remote_site_dir(project))
+        await job.ok(f"Removed {srv.name}:{remote_site_dir(project)}")
     if remove_dev_dir:
         dev = config.DEV_APPS_ROOT / f"{project}-frappe-bench"
         if dev.exists() and dev.resolve().is_relative_to(config.DEV_APPS_ROOT.resolve()):

@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
-from . import config
+from . import config, servers
 
 
 def fmt_duration(seconds: float) -> str:
@@ -29,6 +29,7 @@ class Job:
     id: str
     title: str
     scope: str  # "traefik", "system" or a site project name
+    server: str = field(default_factory=lambda: servers.current().name)
     status: str = "running"  # running | success | failed
     lines: list[dict] = field(default_factory=list)
     started: float = field(default_factory=time.time)
@@ -72,6 +73,7 @@ class Job:
             "id": self.id,
             "title": self.title,
             "scope": self.scope,
+            "server": self.server,
             "status": self.status,
             "started": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.started)),
             "duration": round(self.elapsed),
@@ -92,14 +94,18 @@ def get(job_id: str) -> Job | None:
     return _jobs.get(job_id)
 
 
-def recent(limit: int = 20, scope: str | None = None) -> list[Job]:
-    items = [j for j in _jobs.values() if scope is None or j.scope == scope]
+def recent(limit: int = 20, scope: str | None = None, all_servers: bool = False) -> list[Job]:
+    """Newest jobs on the selected server (or on every server), optionally for one scope."""
+    server = servers.current().name
+    items = [j for j in _jobs.values()
+             if (all_servers or j.server == server) and (scope is None or j.scope == scope)]
     return sorted(items, key=lambda j: j.started, reverse=True)[:limit]
 
 
 def running_for(scope: str) -> Job | None:
+    server = servers.current().name
     for j in _jobs.values():
-        if j.scope == scope and j.status == "running":
+        if j.server == server and j.scope == scope and j.status == "running":
             return j
     return None
 
@@ -108,7 +114,7 @@ def start(title: str, scope: str, fn: JobFn) -> Job:
     """Start ``fn`` in the background. Jobs sharing a scope run one at a time."""
     job = Job(id=uuid.uuid4().hex[:12], title=title, scope=scope)
     _jobs[job.id] = job
-    lock = _scope_locks.setdefault(scope, asyncio.Lock())
+    lock = _scope_locks.setdefault(f"{job.server}/{scope}", asyncio.Lock())
 
     async def runner() -> None:
         if lock.locked():
@@ -147,7 +153,7 @@ def _persist(job: Job) -> None:
     try:
         path = config.JOBS_DIR / f"{time.strftime('%Y%m%d-%H%M%S', time.localtime(job.started))}-{job.id}.log"
         with path.open("w") as fh:
-            fh.write(f"# {job.title} [{job.scope}] -> {job.status} in {fmt_duration(job.elapsed)}\n")
+            fh.write(f"# {job.title} [{job.server}/{job.scope}] -> {job.status} in {fmt_duration(job.elapsed)}\n")
             for line in job.lines:
                 fh.write(f"[{line['t']:>7}s] {line['level']:<5} {line['text']}\n")
     except OSError:

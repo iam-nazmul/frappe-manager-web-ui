@@ -14,27 +14,39 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import config, docker, traefik
+from . import config, docker, servers, traefik
 from .jobs import Job, JobError
 
-STATE_FILE = config.TUNNEL_DIR / "state.json"
-CONFIG_FILE = config.TUNNEL_DIR / "config.yml"
 # /home/nonroot in the image is not traversable by the host uid we run as, so use a neutral HOME.
 HOME = "/fdm"
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
 UUID_RE = re.compile(r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b")
 
 
+def state_file() -> Path:
+    return config.TUNNEL_DIR / "state.json"
+
+
+def config_file() -> Path:
+    return config.TUNNEL_DIR / "config.yml"
+
+
+def require_local() -> None:
+    """The connector mounts files from this machine, so it can only run on the local Docker."""
+    if not servers.current().local:
+        raise JobError("Cloudflare Tunnel is managed for this machine only. Switch to 'This machine' in the sidebar.")
+
+
 def load_state() -> dict:
     try:
-        st = json.loads(STATE_FILE.read_text())
+        st = json.loads(state_file().read_text())
     except (OSError, ValueError):
         st = {}
     return {"tunnel_id": "", "tunnel_name": "", "hostnames": [], **st}
 
 
 def save_state(st: dict) -> None:
-    STATE_FILE.write_text(json.dumps(st, indent=2))
+    state_file().write_text(json.dumps(st, indent=2))
 
 
 def cert_path() -> Path:
@@ -145,7 +157,7 @@ def render(st: dict, origin: str) -> str:
 
 def config_text() -> str:
     try:
-        return CONFIG_FILE.read_text()
+        return config_file().read_text()
     except OSError:
         return ""
 
@@ -153,6 +165,7 @@ def config_text() -> str:
 # --------------------------------------------------------------------------- jobs
 
 async def login(job: Job) -> dict:
+    require_local()
     cert = cert_path()
     backup = None
     if cert.exists():
@@ -173,6 +186,7 @@ async def login(job: Job) -> dict:
 
 async def use_tunnel(job: Job, name: str) -> dict:
     """Use the tunnel called ``name``, creating it if needed, then re-point DNS and restart the connector."""
+    require_local()
     if not NAME_RE.match(name):
         raise JobError("Tunnel name: letters, digits, '-', '_' or '.', up to 63 characters")
     if not cert_path().exists():
@@ -223,14 +237,15 @@ async def _route_dns(job: Job, tunnel_id: str, hostname: str) -> None:
 
 async def apply(job: Job) -> dict:
     """Write the connector config and (re)create the cloudflared container."""
+    require_local()
     st = load_state()
     if not st["tunnel_id"]:
         raise JobError("Choose or create a tunnel first")
     if not creds_path(st["tunnel_id"]).exists():
         raise JobError(f"Tunnel credentials {creds_path(st['tunnel_id'])} not found")
     origin = await _origin()
-    CONFIG_FILE.write_text(render(st, origin))
-    await job.step(f"Wrote {CONFIG_FILE} ({len(st['hostnames'])} hostname(s) → {origin})")
+    config_file().write_text(render(st, origin))
+    await job.step(f"Wrote {config_file()} ({len(st['hostnames'])} hostname(s) → {origin})")
     await docker.ensure_network(config.TRAEFIK_NETWORK)
     if await docker.inspect([config.TUNNEL_CONTAINER]):
         await docker.docker("rm", "-f", config.TUNNEL_CONTAINER, timeout=60)
@@ -266,6 +281,7 @@ async def control(action: str) -> docker.Result:
 
 
 async def publish(job: Job, site: dict) -> dict:
+    require_local()
     domain = site["domain"]
     if domain.endswith((".localhost", ".local", ".test")):
         raise JobError(f"{domain} is a local-only name. Publish a site on a real domain in your Cloudflare account.")
@@ -285,6 +301,7 @@ async def publish(job: Job, site: dict) -> dict:
 
 
 async def unpublish(job: Job, hostname: str, site: dict | None) -> dict:
+    require_local()
     st = load_state()
     if hostname not in st["hostnames"]:
         raise JobError(f"{hostname} is not published")

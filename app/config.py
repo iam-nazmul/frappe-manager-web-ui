@@ -10,10 +10,8 @@ STATIC_DIR = APP_DIR / "static"
 
 # Where the UI keeps generated compose files, .env files, Traefik config and job logs.
 DATA_DIR = Path(os.environ.get("FDM_DATA_DIR", Path.home() / "frappe-docker-manager")).expanduser()
-SITES_DIR = DATA_DIR / "sites"
-TRAEFIK_DIR = DATA_DIR / "traefik"
 JOBS_DIR = DATA_DIR / "jobs"
-TUNNEL_DIR = DATA_DIR / "tunnel"
+# SITES_DIR, TRAEFIK_DIR and TUNNEL_DIR depend on the selected server - see __getattr__ below.
 
 # Host folder that receives the bench "apps" directory for local development (VS Code editing).
 DEV_APPS_ROOT = Path(os.environ.get("FDM_DEV_DIR", Path.home() / "frappe-docker")).expanduser()
@@ -38,5 +36,16 @@ CLOUDFLARED_DIR = Path(os.environ.get("FDM_CLOUDFLARED_DIR", Path.home() / ".clo
 CLOUDFLARED_IMAGE = os.environ.get("FDM_CLOUDFLARED_IMAGE", "cloudflare/cloudflared:2026.11.2")
 TUNNEL_CONTAINER = "cloudflared"
 
-for d in (SITES_DIR, TRAEFIK_DIR, JOBS_DIR, TUNNEL_DIR):
-    d.mkdir(parents=True, exist_ok=True)
+JOBS_DIR.mkdir(parents=True, exist_ok=True)
+
+_SERVER_DIRS = {"SITES_DIR": "sites", "TRAEFIK_DIR": "traefik", "TUNNEL_DIR": "tunnel"}
+
+
+def __getattr__(name: str) -> Path:
+    if name in _SERVER_DIRS:
+        from . import servers  # noqa: PLC0415 - servers imports config
+
+        d = servers.current().data_dir / _SERVER_DIRS[name]
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    raise AttributeError(name)

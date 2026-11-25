@@ -29,7 +29,7 @@ async def bridge(ws: WebSocket, container: str, user: str, command: list[str]) -
         args += ["-w", "/home/frappe/frappe-bench"]
     args += [container, *(command or ["sh", "-c", shell])]
     proc = await asyncio.create_subprocess_exec(
-        *args, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+        *args, stdin=slave, stdout=slave, stderr=slave, start_new_session=True, env=docker.proc_env())
     os.close(slave)
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[bytes] = asyncio.Queue()

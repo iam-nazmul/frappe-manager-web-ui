@@ -41,8 +41,8 @@
   <div class="inline-fields">
     <div class="field"><label>HTTP port</label>
       <div class="row" style="flex-wrap:nowrap"><input type="number" name="http_port" value="{{ cfg.http_port }}" min="1" max="65535">
-        <button class="btn sm" type="button" id="suggest" title="Find a free port">Find free</button></div>
-      <div class="hint local-hint">Suggested free port: <strong>{{ suggested_port or 'none in 8081-8099' }}</strong>. macOS often reserves port 80.</div></div>
+        {% if server.local %}<button class="btn sm" type="button" id="suggest" title="Find a free port">Find free</button>{% endif %}</div>
+      <div class="hint local-hint">{% if not server.local %}Remote server: free ports are not checked in advance.{% else %}Suggested free port: <strong>{{ suggested_port or 'none in 8081-8099' }}</strong>. macOS often reserves port 80.{% endif %}</div></div>
     <div class="field"><label>Dashboard port</label><input type="number" name="dashboard_port" value="{{ cfg.dashboard_port }}" min="1" max="65535">
       <div class="hint">Bound to 127.0.0.1 only.</div></div>
   </div>
@@ -93,7 +93,7 @@
     update();
   });
   update();
-  $("#suggest").onclick = async () => { const r = await api("/api/ports/suggest?start=8081"); if (r.port) f.http_port.value = r.port; else toast("No free port in 8081-8111", "err"); };
+  if ($("#suggest")) $("#suggest").onclick = async () => { const r = await api("/api/ports/suggest?start=8081"); if (r.port) f.http_port.value = r.port; else toast("No free port in 8081-8111", "err"); };
   f.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(f), body = Object.fromEntries(fd.entries());

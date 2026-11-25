@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Servers · Frappe Docker Manager{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Servers</h1><div class="sub">Control Docker on other machines over SSH. Pick the active server in the sidebar; every page and task then works on that server.</div></div>
+  <button class="btn" id="refresh">⟳ Refresh status</button>
+</div>
+
+<div class="card tight" style="margin-bottom:16px">
+  <table>
+    <thead><tr><th>Server</th><th class="hide-sm">Address</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {% for s in server_list %}
+      <tr data-server="{{ s.name }}">
+        <td><strong>{{ 'This machine' if s.local else s.name }}</strong>{% if s.name == server.name %} <span class="pill plain">active</span>{% endif %}</td>
+        <td class="hide-sm mono small">{{ 'local Docker' if s.local else s.label }}</td>
+        <td class="js-status muted small">checking…</td>
+        <td style="text-align:right;white-space:nowrap">
+          {% if s.name != server.name %}<button class="btn sm" data-use="{{ s.name }}">Use</button>{% endif %}
+          {% if not s.local %}<button class="btn sm danger" data-remove="{{ s.name }}">Remove</button>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="grid cols-2" style="align-items:start">
+<form class="card" id="add">
+  <h2>Add a server</h2>
+  <div class="inline-fields">
+    <div class="field"><label>Name</label><input type="text" name="name" placeholder="prod-1" required spellcheck="false"></div>
+    <div class="field"><label>Host or IP</label><input type="text" name="host" placeholder="203.0.113.10" required spellcheck="false"></div>
+  </div>
+  <div class="inline-fields">
+    <div class="field"><label>SSH user</label><input type="text" name="user" placeholder="ubuntu" required spellcheck="false"></div>
+    <div class="field"><label>SSH port</label><input type="number" name="port" value="22" min="1" max="65535"></div>
+  </div>
+  <div class="field"><label>Private key on this machine</label>
+    <input type="text" name="key" value="{{ default_key }}" placeholder="~/.ssh/id_ed25519" required spellcheck="false">
+    <div class="hint">Password logins aren't supported. The key must not need a passphrase, or must be loaded in ssh-agent.</div></div>
+  <button class="btn primary">Connect &amp; add</button>
+  <p class="small muted" style="margin-top:10px">Connecting checks SSH, Docker and Docker Compose on the server. The first connection trusts the server's host key and remembers it.</p>
+</form>
+
+<div class="stack">
+  <div class="card">
+    <h2>Server requirements</h2>
+    <ol class="small" style="margin:0;padding-left:18px;line-height:1.7">
+      <li>Docker Engine and the Compose plugin installed.</li>
+      <li>The SSH user is in the <code>docker</code> group: <code>sudo usermod -aG docker &lt;user&gt;</code>, then log in again.</li>
+      <li>This machine's public key is in <code>~/.ssh/authorized_keys</code> of that user.</li>
+    </ol>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Key for this app</h2><button class="btn sm" id="genkey">{{ 'Show' if app_key else 'Generate' }}</button></div>
+    <p class="small muted">Optional: a dedicated key so you don't share your personal one. Add its public key to the server, then use it above.</p>
+    <div id="pubkey" {{ '' if app_key else 'hidden' }}>
+      <div class="copy-line"><code class="small" id="pubkey-text" style="overflow-wrap:anywhere">{{ app_key }}</code><button class="btn sm" type="button" id="copy-pub">Copy</button></div>
+      <p class="small muted" style="margin-top:8px">On the server: <code>echo '&lt;the key above&gt;' &gt;&gt; ~/.ssh/authorized_keys</code></p>
+    </div>
+  </div>
+</div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const { $, $$, api, esc, toast, confirmAction } = FDM;
+
+  async function loadStatus() {
+    $$(".js-status").forEach((el) => { el.textContent = "checking…"; el.className = "js-status muted small"; });
+    try {
+      const all = await api("/api/servers/status");
+      $$("tr[data-server]").forEach((tr) => {
+        const st = all[tr.dataset.server], el = $(".js-status", tr);
+        if (!st) return;
+        el.className = "js-status small";
+        el.innerHTML = st.ok
+          ? `<span class="pill ok">online</span> <span class="muted">Docker ${esc(st.version)} · ${esc(st.running)}/${esc(st.containers)} running</span>`
+          : `<span class="pill err">offline</span> <span class="muted">${esc(st.error)}</span>`;
+      });
+    } catch (e) { toast(e.message, "err"); }
+  }
+  loadStatus();
+  $("#refresh").onclick = loadStatus;
+
+  $("#add").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = e.submitter; btn.disabled = true; btn.textContent = "Connecting…";
+    try {
+      const r = await api("/api/servers", { method: "POST", body: Object.fromEntries(new FormData(e.target).entries()) });
+      toast(`Added ${r.name}`, "ok");
+      setTimeout(() => location.reload(), 600);
+    } catch (err) { toast(err.message, "err"); btn.disabled = false; btn.textContent = "Connect & add"; }
+  });
+
+  $$("[data-use]").forEach((b) => b.onclick = async () => {
+    await api("/api/servers/select", { method: "POST", body: { name: b.dataset.use } });
+    location.href = "/";
+  });
+  $$("[data-remove]").forEach((b) => b.onclick = async () => {
+    const n = b.dataset.remove;
+    if (!(await confirmAction(`Remove ${n} from this UI? Nothing on the server is changed.`, { danger: true, okText: "Remove" }))) return;
+    await api(`/api/servers/${encodeURIComponent(n)}/delete`, { method: "POST" });
+    location.reload();
+  });
+
+  $("#genkey").onclick = async () => {
+    try {
+      const r = await api("/api/servers/key", { method: "POST" });
+      $("#pubkey-text").textContent = r.public_key; $("#pubkey").hidden = false;
+      $("#add").key.value = r.path;
+    } catch (e) { toast(e.message, "err"); }
+  };
+  $("#copy-pub").onclick = () => navigator.clipboard.writeText($("#pubkey-text").textContent).then(() => toast("Copied", "ok"));
+})();
+</script>
+{% endblock %}

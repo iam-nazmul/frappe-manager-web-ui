@@ -2,7 +2,7 @@
 {% block title %}Dashboard · Frappe Docker Manager{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><h1>Dashboard</h1><div class="sub">Frappe / ERPNext sites running in Docker on this machine</div></div>
+  <div><h1>Dashboard</h1><div class="sub">Frappe / ERPNext sites running in Docker on {{ 'this machine' if server.local else server.name ~ ' (' ~ server.label ~ ')' }}</div></div>
   <a class="btn primary" href="/sites/new">+ New site</a>
 </div>
 

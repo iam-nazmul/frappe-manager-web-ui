@@ -12,18 +12,21 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Str
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import config, docker, jobs, sites, terminal, traefik, tunnel, versions
+from . import config, docker, jobs, servers, sites, terminal, traefik, tunnel, versions
 from .security import GuardMiddleware
 
 app = FastAPI(title="Frappe Docker Manager", docs_url="/api/docs", redoc_url=None)
+app.add_middleware(servers.ServerMiddleware)
 app.add_middleware(GuardMiddleware)
+servers.write_ssh_files()  # the docker CLI reaches remote servers through this ssh config
 app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=config.TEMPLATES_DIR)
 templates.env.globals["config"] = config
 
 
 def page(request: Request, name: str, **ctx) -> HTMLResponse:
-    return templates.TemplateResponse(request, name, {"nav": name.split(".")[0], **ctx})
+    return templates.TemplateResponse(request, name, {"nav": name.split(".")[0], "server": servers.current(),
+                                                      "server_list": servers.load_all(), **ctx})
 
 
 async def require_site(project: str) -> dict:
@@ -54,13 +57,17 @@ async def dashboard(request: Request):
 @app.get("/traefik", response_class=HTMLResponse)
 async def traefik_page(request: Request):
     tst = await traefik.status()
-    suggested = traefik.suggest_port(8081, 8099, {tst["config"]["dashboard_port"]})
+    suggested = traefik.suggest_port(8081, 8099, {tst["config"]["dashboard_port"]}) if servers.current().local else None
     return page(request, "traefik.html", traefik=tst, suggested_port=suggested,
                 compose=traefik.compose_text(), has_cf_token="CF_DNS_API_TOKEN=" in traefik._read_env())
 
 
 @app.get("/tunnel", response_class=HTMLResponse)
 async def tunnel_page(request: Request):
+    if not servers.current().local:
+        return page(request, "notice.html", nav="tunnel", heading="Cloudflare Tunnel",
+                    message="Cloudflare Tunnel is managed for this machine only. A remote server usually has a "
+                            "public IP: use Traefik with Let's Encrypt there, or switch to 'This machine' in the sidebar.")
     all_sites = await sites.discover()
     public = [{"domain": s["domain"], "project": s["project"]} for s in all_sites
               if not s["domain"].endswith((".localhost", ".local", ".test"))]
@@ -86,7 +93,7 @@ async def site_page(request: Request, project: str):
 
 @app.get("/jobs", response_class=HTMLResponse)
 async def jobs_page(request: Request):
-    return page(request, "jobs.html", jobs=jobs.recent(100))
+    return page(request, "jobs.html", jobs=jobs.recent(100, all_servers=True))
 
 
 @app.get("/jobs/{job_id}", response_class=HTMLResponse)
@@ -197,10 +204,67 @@ async def api_traefik_logs(lines: int = 200):
     return PlainTextResponse(r.text)
 
 
+# --------------------------------------------------------------------------- servers
+
+@app.get("/servers", response_class=HTMLResponse)
+async def servers_page(request: Request):
+    return page(request, "servers.html", default_key=servers.default_key(), app_key=servers.app_public_key())
+
+
+@app.get("/api/servers/status")
+async def api_servers_status():
+    rows = servers.load_all()
+    results = await asyncio.gather(*(servers.status(s) for s in rows))
+    return {s.name: r for s, r in zip(rows, results)}
+
+
+@app.post("/api/servers")
+async def api_servers_add(request: Request):
+    try:
+        srv = servers.validate(await request.json())
+        srv = await servers.connect(srv)
+    except ValueError as exc:
+        servers.write_ssh_files()  # drop the trial entry
+        return bad(str(exc))
+    servers.add(srv)
+    return {"ok": True, "name": srv.name, "remote_home": srv.remote_home}
+
+
+@app.post("/api/servers/{name}/delete")
+async def api_servers_delete(name: str):
+    if name == servers.LOCAL or not servers.get(name):
+        return bad("Unknown server")
+    servers.remove(name)
+    resp = JSONResponse({"ok": True})
+    if servers.current().name == name:
+        resp.delete_cookie(servers.COOKIE, path="/")
+    return resp
+
+
+@app.post("/api/servers/select")
+async def api_servers_select(request: Request):
+    name = str((await request.json()).get("name", ""))
+    if not servers.get(name):
+        return bad("Unknown server")
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(servers.COOKIE, name, path="/", samesite="lax", httponly=True, max_age=10 * 365 * 86400)
+    return resp
+
+
+@app.post("/api/servers/key")
+async def api_servers_key():
+    try:
+        return {"public_key": await servers.generate_key(), "path": str(servers.APP_KEY)}
+    except RuntimeError as exc:
+        return bad(str(exc), 500)
+
+
 # --------------------------------------------------------------------------- cloudflare tunnel
 
 @app.get("/api/tunnel/tunnels")
 async def api_tunnel_list():
+    if not servers.current().local:
+        return bad("Cloudflare Tunnel is managed for this machine only")
     try:
         return await tunnel.list_tunnels()
     except (RuntimeError, ValueError) as exc:
@@ -250,6 +314,8 @@ async def api_tunnel_logs(lines: int = 200):
 async def api_tunnel_action(action: str):
     if action not in ("start", "stop", "restart"):
         raise HTTPException(404)
+    if not servers.current().local:
+        return bad("Cloudflare Tunnel is managed for this machine only")
     r = await tunnel.control(action)
     return {"ok": r.ok, "output": r.text}
 
@@ -358,9 +424,11 @@ async def api_logs_stream(request: Request, project: str, source: str = "web", l
     except ValueError as exc:
         return bad(str(exc))
 
+    env = docker.proc_env()
+
     async def gen():
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
-                                                    stderr=asyncio.subprocess.STDOUT)
+                                                    stderr=asyncio.subprocess.STDOUT, env=env)
         assert proc.stdout
         try:
             while True:
@@ -464,7 +532,7 @@ async def api_download(project: str, container: str, path: str):
         raise HTTPException(404, f"{path} does not exist in {container}")
     proc = await asyncio.create_subprocess_exec(docker.docker_bin(), "cp", f"{container}:{path}", "-",
                                                 stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.DEVNULL)
+                                                stderr=asyncio.subprocess.DEVNULL, env=docker.proc_env())
 
     async def gen():
         assert proc.stdout

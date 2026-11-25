@@ -52,9 +52,9 @@
         </select>
         <div class="hint" id="web-hint"></div></div>
     </div>
-    <label class="check local-only"><input type="checkbox" name="dev_mount" checked>
+    {% if server.local %}<label class="check local-only"><input type="checkbox" name="dev_mount" checked>
       <span>Mount the apps folder on this machine for VS Code
-        <small>Sources are copied to <code>{{ dev_root }}/&lt;site&gt;-frappe-bench/apps</code>; edits show up in the container.</small></span></label>
+        <small>Sources are copied to <code>{{ dev_root }}/&lt;site&gt;-frappe-bench/apps</code>; edits show up in the container.</small></span></label>{% endif %}
     <label class="check"><input type="checkbox" name="developer_mode" id="developer_mode">
       <span>Enable developer mode <small>Lets you create DocTypes / custom apps from the desk.</small></span></label>
     <label class="check server-only"><input type="checkbox" name="ssl" id="ssl" {{ 'checked' if traefik.config.ssl }} {{ '' if traefik.config.ssl else 'disabled' }}>
@@ -123,7 +123,9 @@
     const d = form.domain.value.trim().toLowerCase();
     form.domain.placeholder = m === "local" ? "mysite.localhost" : "erp.example.com";
     const hint = $("#domain-hint");
-    if (m === "local") {
+    if (m === "local" && !{{ server.local | tojson }}) {
+      hint.innerHTML = "On a remote server a local name only works from the server itself - use a real domain to open it from your browser.";
+    } else if (m === "local") {
       hint.innerHTML = d && !d.endsWith(".localhost")
         ? "⚠️ Non-<code>.localhost</code> domains need an <code>/etc/hosts</code> entry (the site page shows the command)."
         : "<code>.localhost</code> domains resolve to 127.0.0.1 automatically - no hosts file edits.";

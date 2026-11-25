@@ -8,12 +8,23 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from . import config, docker
+from . import config, docker, servers
 from .jobs import Job, JobError
 
-CONFIG_FILE = config.TRAEFIK_DIR / "config.json"
-COMPOSE_FILE = config.TRAEFIK_DIR / "docker-compose.yml"
-ENV_FILE = config.TRAEFIK_DIR / ".env"
+
+
+def config_file() -> Path:
+    return config.TRAEFIK_DIR / "config.json"
+
+
+def compose_file() -> Path:
+    return config.TRAEFIK_DIR / "docker-compose.yml"
+
+
+def env_file() -> Path:
+    return config.TRAEFIK_DIR / ".env"
+
+
 EMAIL_RE = re.compile(r"^[^@\s'\"]+@[^@\s'\"]+\.[^@\s'\"]+$")
 
 yaml_env = Environment(
@@ -36,13 +47,13 @@ DEFAULTS = {
 
 def load_config() -> dict:
     try:
-        return {**DEFAULTS, **json.loads(CONFIG_FILE.read_text())}
+        return {**DEFAULTS, **json.loads(config_file().read_text())}
     except (OSError, ValueError):
         return dict(DEFAULTS)
 
 
 def save_config(cfg: dict) -> None:
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    config_file().write_text(json.dumps(cfg, indent=2))
 
 
 def port_free(port: int) -> bool:
@@ -67,7 +78,7 @@ async def status() -> dict:
     found = await docker.inspect([config.TRAEFIK_CONTAINER])
     net = await docker.network_exists(config.TRAEFIK_NETWORK)
     st: dict = {"config": cfg, "network": net, "exists": bool(found), "running": False,
-                "managed": COMPOSE_FILE.exists(), "compose_file": str(COMPOSE_FILE)}
+                "managed": compose_file().exists(), "compose_file": str(compose_file())}
     if found:
         c = found[0]
         summ = docker.container_summary(c)
@@ -109,7 +120,14 @@ def render(cfg: dict) -> str:
         http_port=cfg["http_port"],
         dashboard_port=cfg["dashboard_port"],
         dashboard_bind="127.0.0.1",
+        letsencrypt_dir=letsencrypt_dir(),
     )
+
+
+def letsencrypt_dir() -> str:
+    """Bind-mount source for certificates, as a path on the server that runs Traefik."""
+    srv = servers.current()
+    return "./letsencrypt" if srv.local else f"{srv.remote_root}/traefik/letsencrypt"
 
 
 def validate(form: dict) -> dict:
@@ -148,7 +166,7 @@ def validate(form: dict) -> dict:
 
 def _read_env() -> str:
     try:
-        return ENV_FILE.read_text()
+        return env_file().read_text()
     except OSError:
         return ""
 
@@ -171,9 +189,14 @@ async def setup(job: Job, cfg: dict) -> dict:
         r = await docker.docker("rm", "-f", config.TRAEFIK_CONTAINER, timeout=60)
         await job.log(r.text)
 
-    await job.step("Checking ports")
     ports = [cfg["http_port"], cfg["dashboard_port"]] + ([443] if cfg["ssl"] else [])
-    busy = [p for p in ports if not port_free(p)]
+    busy = []
+    if servers.current().local:
+        await job.step("Checking ports")
+        busy = [p for p in ports if not port_free(p)]
+    else:
+        await job.log(f"Port check skipped on remote server {servers.current().name} - "
+                      "Docker reports a conflict if a port is taken.")
     if busy:
         alt = suggest_port(skip={cfg["dashboard_port"]}) if cfg["mode"] == "local" else None
         hint = f" Try HTTP port {alt}." if alt and cfg["http_port"] in busy else ""
@@ -182,18 +205,21 @@ async def setup(job: Job, cfg: dict) -> dict:
 
     await job.step("Writing Traefik configuration")
     (config.TRAEFIK_DIR / "letsencrypt").mkdir(exist_ok=True)
-    COMPOSE_FILE.write_text(render(cfg))
+    srv = servers.current()
+    if not srv.local:
+        await servers.make_remote_dir(srv, letsencrypt_dir())
+    compose_file().write_text(render(cfg))
     if token:
-        ENV_FILE.write_text(f"CF_DNS_API_TOKEN={token}\n")
-        ENV_FILE.chmod(0o600)
-    elif not ENV_FILE.exists():
-        ENV_FILE.write_text("")
+        env_file().write_text(f"CF_DNS_API_TOKEN={token}\n")
+        env_file().chmod(0o600)
+    elif not env_file().exists():
+        env_file().write_text("")
     save_config(cfg)
-    await job.log(f"Wrote {COMPOSE_FILE}")
+    await job.log(f"Wrote {compose_file()}")
 
     await job.step("Starting Traefik")
     comp = await docker.compose_cmd()
-    code = await docker.stream([*comp, "-f", str(COMPOSE_FILE), "--project-directory",
+    code = await docker.stream([*comp, "-f", str(compose_file()), "--project-directory",
                                 str(config.TRAEFIK_DIR), "up", "-d", "--pull", "missing"], job.log)
     if code != 0:
         raise JobError("Traefik failed to start - see the log above")
@@ -255,6 +281,6 @@ async def fix_network(job: Job) -> dict:
 
 def compose_text() -> str:
     try:
-        return Path(COMPOSE_FILE).read_text()
+        return compose_file().read_text()
     except OSError:
         return ""

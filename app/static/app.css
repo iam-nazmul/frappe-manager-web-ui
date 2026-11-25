@@ -40,6 +40,9 @@ p { margin: 0 0 10px; }
 .nav a:hover { background: var(--panel-2); text-decoration: none; }
 .nav a.active { background: var(--accent-soft); color: var(--accent); }
 .nav svg { width: 17px; height: 17px; flex: none; }
+.server-pick { display: flex; align-items: center; gap: 8px; margin: 0 4px 12px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.server-pick select { border: 0; background: transparent; padding: 2px 0; font-weight: 600; min-width: 0; flex: 1; color: var(--text); }
+.server-pick select:focus { outline: none; }
 .sidebar .foot { margin-top: auto; padding: 10px; font-size: 12px; color: var(--muted); }
 .main { padding: 26px 32px 60px; min-width: 0; max-width: 1280px; }
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }

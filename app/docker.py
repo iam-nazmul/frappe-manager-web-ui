@@ -8,6 +8,8 @@ import shutil
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Iterable, Sequence
 
+from . import servers
+
 LineCallback = Callable[[str], Awaitable[None] | None]
 
 
@@ -30,6 +32,11 @@ def docker_bin() -> str:
     return shutil.which("docker") or "docker"
 
 
+def proc_env(extra: dict | None = None) -> dict:
+    """Environment for docker subprocesses: points the CLI at the selected server (see servers.py)."""
+    return {**os.environ, **servers.current().env(), **(extra or {})}
+
+
 async def run(args: Sequence[str], *, timeout: float | None = 120, stdin: bytes | None = None,
               env: dict | None = None) -> Result:
     """Run a command and capture its output."""
@@ -39,7 +46,7 @@ async def run(args: Sequence[str], *, timeout: float | None = 120, stdin: bytes 
             stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, **(env or {})},
+            env=proc_env(env),
         )
     except FileNotFoundError as exc:
         return Result(127, "", str(exc))
@@ -66,7 +73,7 @@ async def stream(args: Sequence[str], on_line: LineCallback, *, cwd: str | None 
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=cwd,
-            env={**os.environ, **(env or {})},
+            env=proc_env(env),
         )
     except FileNotFoundError as exc:
         r = on_line(f"ERROR: {exc}")

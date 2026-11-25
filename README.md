@@ -36,6 +36,7 @@ Put it behind HTTPS if it is reachable from the internet.
 | **Dashboard** | Docker engine status, Traefik status, all sites (including ones created by the CLI scripts) with live state, quick start/stop |
 | **New site wizard** | Local or VPS mode, ERPNext version picker (live from Docker Hub), admin password, developer mode, VS Code bind-mount of `apps/`, HTTPS, resource limits, plus a live log of every step |
 | **Traefik** | Install or reconfigure (local custom port with free-port finder, or VPS 80/443), Let's Encrypt through the HTTP-01 or Cloudflare DNS-01 challenge, staging CA, start/stop/restart, logs, network repair |
+| **Servers** | Control Docker on other machines over SSH (key login): add, test and remove servers, switch the active server from the sidebar; every page and task then runs there |
 | **Cloudflare Tunnel** | Publish sites on your Cloudflare domains over HTTPS from any machine (home PC behind a router included): log in, pick or create a tunnel, publish/unpublish sites, connector start/stop/restart and logs |
 | **Site → Overview** | Containers with health, per-container start/stop/restart, re-create app, down (keep data), credentials (revealed on request), compose file viewer, `/etc/hosts` helper, publish/unpublish through Cloudflare Tunnel |
 | **Site → Processes** | Supervisor status for web, scheduler, workers and websocket; start/stop/restart each or all |
@@ -45,6 +46,25 @@ Put it behind HTTPS if it is reachable from the internet.
 | **Site → Files & packages** | Upload files into a container, download any file or folder (`.tar`), install apt/apk packages |
 | **Site → Maintenance** | Fix DB permissions, fix restart policies, repair proxy network, delete the site (containers, volumes, folder, and optionally the VS Code folder) |
 | **Tasks** | Every long operation runs as a background task with a replayable live log; logs are saved to `$FDM_DATA_DIR/jobs/` |
+
+## Managing several servers
+
+The UI can control Docker on remote machines over SSH, so one UI manages all your servers.
+
+**On each server:** install Docker Engine with the Compose plugin, add the SSH user to the `docker` group
+(`sudo usermod -aG docker <user>`, then log in again), and put a public key in that user's `~/.ssh/authorized_keys`.
+The Servers page can generate a dedicated key for the UI and show its public key.
+
+**In the UI:** open **Servers** → *Add a server* (name, host, SSH user, port, private key) → **Connect & add**. The UI
+checks SSH, Docker and Compose before saving. Switch between servers with the picker at the top of the sidebar.
+
+- Sites, Traefik, logs, terminal, bench commands, apps, backups and file transfers all work on remote servers.
+  The UI keeps each server's compose files under `~/frappe-docker-manager/servers/<name>/` and copies the config
+  files that containers mount to `~/frappe-docker-manager/` on the server.
+- Remote servers don't offer the VS Code apps folder, `/etc/hosts` helper, free-port finder or Cloudflare Tunnel.
+  Those features need files on this machine. A server with a public IP can use Traefik with Let's Encrypt instead.
+- Only key-based login is supported. The key needs no passphrase, or must be loaded in `ssh-agent`.
+- The first connection trusts the server's host key and stores it in `~/frappe-docker-manager/ssh/known_hosts`.
 
 ## Publishing a site with Cloudflare Tunnel
 
@@ -114,6 +134,7 @@ web-ui/
     ├── sites.py              site discovery, creation job, operations
     ├── traefik.py            Traefik config/setup/network repair
     ├── tunnel.py             Cloudflare Tunnel login, tunnel choice, connector, publish/unpublish
+    ├── servers.py            remote Docker servers over SSH, active-server selection
     ├── docker.py             async docker CLI wrappers
     ├── jobs.py               background tasks with live logs
     ├── terminal.py           PTY ↔ WebSocket bridge for docker exec

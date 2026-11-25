@@ -76,6 +76,7 @@
       <p class="muted small" style="margin-top:10px">Stored in <code>.env</code> next to the compose file. Changing the desk password here: Apps &amp; bench → Set admin password.</p>
     </div>
   </div>
+  {% if server.local %}
   <div class="card" style="margin-top:16px">
     <div class="card-head"><h2>Public access (Cloudflare Tunnel)</h2>
       {% if site.public_url %}<button class="btn sm danger" id="tunnel-unpublish">Unpublish</button>
@@ -87,6 +88,7 @@
       {% elif not tunnel.tunnel_id %}Choose a tunnel on the <a href="/tunnel">Cloudflare Tunnel</a> page first.
       {% else %}Not public. Publishing creates the DNS record <code>{{ site.domain }}</code> → tunnel and serves it over HTTPS.{% endif %}</p>
   </div>
+  {% endif %}
 </section>
 
 <!-- ======================= processes ======================= -->

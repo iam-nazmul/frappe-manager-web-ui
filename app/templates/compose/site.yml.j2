@@ -95,7 +95,7 @@ services:
 {%- else %}
       - apps:/home/frappe/frappe-bench/apps
 {%- endif %}
-      - ./supervisor:/home/frappe/supervisor-template:ro
+      - {{ supervisor_dir }}:/home/frappe/supervisor-template:ro
     environment: *frappe-env
     entrypoint:
       - bash

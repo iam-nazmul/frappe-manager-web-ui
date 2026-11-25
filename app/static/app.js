@@ -207,6 +207,17 @@
     } catch (e) { toast(e.message, "err"); throw e; }
   }
 
+  /* ---------------- server picker ---------------- */
+  document.addEventListener("change", async (e) => {
+    if (e.target.id !== "server-select") return;
+    try {
+      await api("/api/servers/select", { method: "POST", body: { name: e.target.value } });
+      // Site and task pages belong to one server; land on the new server's dashboard instead.
+      const p = location.pathname;
+      location.href = p.startsWith("/sites/") || p.startsWith("/jobs/") ? "/" : location.href;
+    } catch (err) { toast(err.message, "err"); }
+  });
+
   /* ---------------- tabs ---------------- */
   function initTabs(root = document) {
     $$("[data-tabs]", root).forEach((tabs) => {
