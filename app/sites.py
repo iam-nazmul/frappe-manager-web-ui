@@ -682,6 +682,31 @@ async def bench(site: dict, job: Job, command: str, params: dict) -> dict:
     return {}
 
 
+async def list_apps(site: dict) -> list[dict]:
+    """Apps in the bench, flagged with whether they are installed on this site."""
+    app = site["app_container"]
+    bench_r, site_r = await asyncio.gather(
+        docker.docker("exec", "-w", config.BENCH_DIR, app, "sh", "-c",
+                      'for d in apps/*/; do basename "$d"; done', timeout=30),
+        docker.docker("exec", "-w", config.BENCH_DIR, app, "bench", "--site", site["domain"], "list-apps",
+                      timeout=60),
+    )
+    if not bench_r.ok:
+        raise RuntimeError(bench_r.text or "Could not list the bench apps folder")
+    bench_apps = [a for a in bench_r.out.split() if APP_RE.match(a)]
+    installed: dict[str, dict] = {}
+    for line in site_r.out.splitlines():
+        parts = line.split()
+        if parts and parts[0] in bench_apps:
+            installed[parts[0]] = {"version": parts[1] if len(parts) > 1 else "",
+                                   "branch": parts[2] if len(parts) > 2 else ""}
+    if not site_r.ok and not installed:
+        raise RuntimeError(site_r.text or "bench list-apps failed")
+    order = list(installed) + sorted(a for a in bench_apps if a not in installed)
+    return [{"name": a, "installed": a in installed, **installed.get(a, {"version": "", "branch": ""})}
+            for a in order]
+
+
 async def list_backups(site: dict) -> list[dict]:
     path = f"{config.BENCH_DIR}/sites/{site['domain']}/private/backups"
     r = await docker.docker("exec", site["app_container"], "sh", "-c",

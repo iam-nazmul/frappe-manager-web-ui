@@ -118,6 +118,13 @@
 
 <!-- ======================= apps & bench ======================= -->
 <section class="tab-panel" id="tab-apps">
+  <div class="card tight" style="margin-bottom:16px">
+    <div class="row between" style="padding:14px 16px;border-bottom:1px solid var(--border)">
+      <h2 style="margin:0">Apps</h2>
+      <button class="btn sm ghost" id="apps-refresh" title="Refresh">⟳</button>
+    </div>
+    <div id="apps"><div class="empty">Open this tab to load apps.</div></div>
+  </div>
   <div class="grid cols-2">
     <div class="card">
       <h2>Get &amp; install an app</h2>
@@ -351,7 +358,10 @@
   $("#log-clear").onclick = () => { $("#log-console").textContent = ""; };
 
   /* ---------- bench ---------- */
-  const bench = (command, params, title) => runJob(`/api/sites/${P}/bench`, { command, params }, { title, onDone: (j) => { if (command === "backup") loadBackups(); } });
+  const bench = (command, params, title) => runJob(`/api/sites/${P}/bench`, { command, params }, { title, onDone: (j) => {
+    if (command === "backup") loadBackups();
+    if (["install-app", "uninstall-app", "get-app"].includes(command)) loadApps();
+  } });
   $$("[data-bench]").forEach((b) => b.addEventListener("click", async () => {
     const cmd = b.dataset.bench;
     if (["migrate", "build"].includes(cmd) && !(await confirmAction(`Run bench ${cmd}? Processes restart afterwards.`))) return;
@@ -362,7 +372,10 @@
     const f = e.target, src = f.source.value.trim();
     const name = src.replace(/\.git$/, "").split("/").pop().replace(/-/g, "_");
     runJob(`/api/sites/${P}/bench`, { command: "get-app", params: { source: src, branch: f.branch.value.trim() } }, {
-      onDone: (job) => { if (job.status === "success" && f.install.checked) bench("install-app", { app: name }); },
+      onDone: (job) => {
+        loadApps();
+        if (job.status === "success" && f.install.checked) bench("install-app", { app: name });
+      },
     });
   });
   $("#install-app").addEventListener("submit", async (e) => {
@@ -372,6 +385,30 @@
     bench(cmd, { app });
   });
   $("#admin-pw").addEventListener("submit", (e) => { e.preventDefault(); bench("set-admin-password", { password: e.target.password.value }, "Set admin password"); e.target.reset(); });
+
+  async function loadApps() {
+    const box = $("#apps");
+    if (!box.querySelector("table")) box.innerHTML = `<div class="empty">Loading apps…</div>`;
+    try {
+      const list = await api(`/api/sites/${P}/apps`);
+      box.innerHTML = list.length ? `<table><thead><tr><th>App</th><th>Version</th><th class="hide-sm">Branch</th><th>On ${esc(DOMAIN)}</th><th></th></tr></thead><tbody>${list.map((a) => `
+        <tr><td class="mono">${esc(a.name)}</td><td class="mono small">${esc(a.version || "—")}</td>
+        <td class="hide-sm mono small muted">${esc(a.branch || "—")}</td>
+        <td>${a.installed ? `<span class="pill ok">installed</span>` : `<span class="pill">not installed</span>`}</td>
+        <td style="text-align:right">${a.name === "frappe" ? "" : a.installed
+          ? `<button class="btn sm danger" data-app-cmd="uninstall-app" data-app="${esc(a.name)}">Uninstall</button>`
+          : `<button class="btn sm" data-app-cmd="install-app" data-app="${esc(a.name)}">Install</button>`}</td></tr>`).join("")}</tbody></table>`
+        : `<div class="empty">No apps found in the bench.</div>`;
+    } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  }
+  $("#apps-refresh").onclick = loadApps;
+  $("#apps").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-app-cmd]");
+    if (!b) return;
+    const cmd = b.dataset.appCmd, app = b.dataset.app;
+    if (cmd === "uninstall-app" && !(await confirmAction(`Uninstall ${app} from ${DOMAIN}? Its DocTypes and data are removed.`, { danger: true, okText: "Uninstall" }))) return;
+    bench(cmd, { app });
+  });
 
   async function loadBackups() {
     const box = $("#backups");
@@ -410,7 +447,7 @@
   document.addEventListener("tab:shown", (e) => {
     if (e.detail === "terminal" && fit) setTimeout(() => fit.fit(), 30);
     if (e.detail === "processes") loadProcesses();
-    if (e.detail === "apps") loadBackups();
+    if (e.detail === "apps") { loadApps(); loadBackups(); }
   });
 
   /* ---------- files & packages ---------- */

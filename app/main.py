@@ -326,6 +326,15 @@ async def api_bench(request: Request, project: str):
     return job_response(jobs.start(title.strip(), project, lambda j: sites.bench(site, j, command, params)))
 
 
+@app.get("/api/sites/{project}/apps")
+async def api_apps(project: str):
+    site = await require_site(project)
+    try:
+        return await sites.list_apps(site)
+    except RuntimeError as exc:
+        return bad(str(exc), 502)
+
+
 @app.get("/api/sites/{project}/backups")
 async def api_backups(project: str):
     return await sites.list_backups(await require_site(project))
