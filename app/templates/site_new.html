@@ -18,6 +18,27 @@
     </div>
   </div>
 
+  <div class="card server-only">
+    <h2><span class="section-num">2</span>Server</h2>
+    <div class="field"><label for="target">Deploy to</label>
+      <select id="target" name="target">
+        {% for s in server_list %}<option value="{{ s.name }}" {{ 'selected' if s.name == server.name }}>{{ 'This machine' if s.local else s.name ~ ' · ' ~ s.host }}</option>{% endfor %}
+        <option value="__new__">+ New server…</option>
+      </select></div>
+    <div id="new-server" hidden>
+      <div class="inline-fields">
+        <div class="field"><label>Public IP</label><input type="text" name="server_host" placeholder="203.0.113.10" spellcheck="false"></div>
+        <div class="field"><label>Name in this app</label><input type="text" name="server_name" placeholder="prod-1" spellcheck="false"></div>
+      </div>
+      <div class="inline-fields">
+        <div class="field"><label>SSH user</label><input type="text" name="server_user" value="root" spellcheck="false"></div>
+        <div class="field"><label>SSH port</label><input type="number" name="server_port" value="22" min="1" max="65535"></div>
+      </div>
+      <div class="field"><label>SSH password</label><input type="password" name="server_password" autocomplete="off">
+        <div class="hint">Used once to install this app's SSH key; it isn't saved. Docker is installed on the server if it's missing (the user needs <code>sudo</code> or must be root).</div></div>
+    </div>
+  </div>
+
   <div class="card">
     <h2><span class="section-num">2</span>Site name</h2>
     <div class="field">
@@ -57,7 +78,7 @@
         <small>Sources are copied to <code>{{ dev_root }}/&lt;site&gt;-frappe-bench/apps</code>; edits show up in the container.</small></span></label>{% endif %}
     <label class="check"><input type="checkbox" name="developer_mode" id="developer_mode">
       <span>Enable developer mode <small>Lets you create DocTypes / custom apps from the desk.</small></span></label>
-    <label class="check server-only"><input type="checkbox" name="ssl" id="ssl" {{ 'checked' if traefik.config.ssl }} {{ '' if traefik.config.ssl else 'disabled' }}>
+    <label class="check server-only ssl-row"><input type="checkbox" name="ssl" id="ssl" {{ 'checked' if traefik.config.ssl }} {{ '' if traefik.config.ssl else 'disabled' }}>
       <span>HTTPS with Let's Encrypt
         <small>{% if traefik.config.ssl %}Traefik is configured with SSL ({{ traefik.config.challenge }} challenge).{% else %}Configure SSL on the <a href="/traefik">Traefik page</a> first - it needs your email and ports 80/443.{% endif %}</small></span></label>
     <details style="margin-top:6px"><summary class="muted">Resource limits</summary>
@@ -66,6 +87,17 @@
         <div class="field"><label>App CPUs</label><input type="text" name="app_cpus" value="1.0"></div>
       </div>
     </details>
+  </div>
+
+  <div class="card server-only">
+    <h2><span class="section-num">5</span>Public access</h2>
+    <div class="choice-cards">
+      <label class="choice"><input type="radio" name="publish" value="tunnel" {{ 'checked' if tunnel_ready else 'disabled' }}>
+        <strong>☁️ Publish on Cloudflare</strong><span class="muted small">Creates the DNS record and serves HTTPS through a Cloudflare Tunnel. Works even when another web server uses ports 80/443.</span></label>
+      <label class="choice"><input type="radio" name="publish" value="none" {{ '' if tunnel_ready else 'checked' }}>
+        <strong>🔧 I'll set up DNS myself</strong><span class="muted small">Point an A record at the server; Traefik answers on its HTTP port.</span></label>
+    </div>
+    {% if not tunnel_ready %}<div class="hint" style="margin-top:8px">To publish on Cloudflare, log in once on the <a href="/tunnel">Cloudflare Tunnel</a> page.</div>{% endif %}
   </div>
 
   <div class="row">
@@ -120,6 +152,11 @@
     const m = mode();
     $$(".local-only").forEach((el) => el.style.display = m === "local" ? "" : "none");
     $$(".server-only").forEach((el) => el.style.display = m === "server" ? "" : "none");
+    const tunnelOn = m === "server" && form.publish && form.publish.value === "tunnel";
+    $("#new-server").hidden = !(m === "server" && form.target.value === "__new__");
+    $(".ssl-row").style.display = m === "server" && !tunnelOn ? "" : "none";
+    let n = 0;
+    $$(".section-num").forEach((el) => { if (el.closest(".card").style.display !== "none") el.textContent = ++n; });
     const d = form.domain.value.trim().toLowerCase();
     form.domain.placeholder = m === "local" ? "mysite.localhost" : "erp.example.com";
     const hint = $("#domain-hint");
@@ -129,13 +166,15 @@
       hint.innerHTML = d && !d.endsWith(".localhost")
         ? "⚠️ Non-<code>.localhost</code> domains need an <code>/etc/hosts</code> entry (the site page shows the command)."
         : "<code>.localhost</code> domains resolve to 127.0.0.1 automatically - no hosts file edits.";
+    } else if (tunnelOn) {
+      hint.innerHTML = "Use a domain in your Cloudflare account - the DNS record is created for you.";
     } else {
       hint.innerHTML = "Point the domain's DNS A record at this server before enabling SSL.";
     }
     const p = d ? safe(d) : "";
     $("#sum-project").textContent = p || "—";
     $("#sum-containers").innerHTML = p ? ["app", "create-site", "db", "redis"].map((s) => esc(`${p}-${s}`)).join("<br>") : "—";
-    const ssl = m === "server" && form.ssl.checked;
+    const ssl = tunnelOn || (m === "server" && form.ssl.checked);
     const port = m === "server" ? 80 : localPortGuess;
     $("#sum-url").textContent = d ? (ssl ? `https://${d}` : `http://${d}${port === 80 ? "" : ":" + port}`) : "—";
   }
@@ -174,10 +213,12 @@
     const fd = new FormData(form);
     const body = Object.fromEntries(fd.entries());
     for (const k of ["dev_mount", "developer_mode", "ssl"]) body[k] = fd.has(k);
+    if (mode() !== "server") { delete body.target; body.publish = "none"; }
     const btn = $("#create-btn");
     btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Starting…';
     try {
-      const res = await api("/api/sites", { method: "POST", body });
+      const res = await api("/api/deploy", { method: "POST", body });
+      form.server_password.value = "";
       $("#progress").style.display = "";
       $("#progress-title").textContent = res.title;
       $("#progress").scrollIntoView({ behavior: "smooth" });

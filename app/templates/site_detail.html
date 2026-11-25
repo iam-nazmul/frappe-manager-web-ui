@@ -76,19 +76,17 @@
       <p class="muted small" style="margin-top:10px">Stored in <code>.env</code> next to the compose file. Changing the desk password here: Apps &amp; bench → Set admin password.</p>
     </div>
   </div>
-  {% if server.local %}
+  {% set local_name = site.domain.endswith(('.localhost', '.local', '.test')) %}
   <div class="card" style="margin-top:16px">
     <div class="card-head"><h2>Public access (Cloudflare Tunnel)</h2>
       {% if site.public_url %}<button class="btn sm danger" id="tunnel-unpublish">Unpublish</button>
-      {% elif tunnel.tunnel_id and site.mode == 'server' %}<button class="btn sm primary" id="tunnel-publish">Publish</button>{% endif %}</div>
+      {% elif tunnel_ready and not local_name %}<button class="btn sm primary" id="tunnel-publish">Publish</button>{% endif %}</div>
     <p class="small muted" style="margin:0">
-      {% if site.public_url %}Live at <a href="{{ site.public_url }}" target="_blank">{{ site.public_url }} ↗</a> while this machine is on.
-      {% elif site.mode != 'server' %}<code>{{ site.domain }}</code> is a local-only name. Create the site on a domain in your Cloudflare account to publish it.
+      {% if site.public_url %}Live at <a href="{{ site.public_url }}" target="_blank">{{ site.public_url }} ↗</a> while {{ 'this machine' if server.local else 'the server' }} is on.
+      {% elif local_name %}<code>{{ site.domain }}</code> is a local-only name. Create the site on a domain in your Cloudflare account to publish it.
       {% elif not tunnel_ready %}Log in to Cloudflare and choose a tunnel on the <a href="/tunnel">Cloudflare Tunnel</a> page first.
-      {% elif not tunnel.tunnel_id %}Choose a tunnel on the <a href="/tunnel">Cloudflare Tunnel</a> page first.
       {% else %}Not public. Publishing creates the DNS record <code>{{ site.domain }}</code> → tunnel and serves it over HTTPS.{% endif %}</p>
   </div>
-  {% endif %}
 </section>
 
 <!-- ======================= processes ======================= -->

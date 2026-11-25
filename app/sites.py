@@ -174,6 +174,7 @@ def _build_site(project: str, items: list[dict], app: dict | None, tstatus: dict
         "url": traefik.site_url(domain, ssl, http_port),
         "public_url": f"https://{domain}" if domain in tunnel.public_hostnames() else "",
         "created": meta.get("created", ""),
+        "web_server": meta.get("web_server", ""),
         "env": env,
     }
 
@@ -237,6 +238,26 @@ def validate_new(form: dict) -> dict:
         "app_memory": mem,
         "app_cpus": str(cpus),
     }
+
+
+async def deploy(job: Job, opts: dict, server: servers.Server, password: str = "",
+                 new_server: bool = False, publish: bool = False) -> dict:
+    """Background job: connect a new server if needed, create the site there, and publish it on Cloudflare."""
+    if new_server:
+        await job.step(f"Connecting server {server.name}")
+        await servers.add_server(job, server, password, install_docker=True)
+        server = servers.get(server.name)
+    servers.use(server.name)  # only for this job's task; the request's server is unchanged
+    if await get(opts["project"]):
+        raise JobError(f"A site named {opts['domain']} already exists on {server.name}")
+    result = await create(job, opts)
+    if publish:
+        await job.step("Publishing on Cloudflare")
+        if not tunnel.load_state()["tunnel_id"]:
+            await tunnel.use_tunnel(job, f"fdm-{server.name}")
+        site = await get(opts["project"])
+        result.update(await tunnel.publish(job, site))
+    return result
 
 
 def remote_site_dir(project: str) -> str:
@@ -324,7 +345,7 @@ async def create(job: Job, opts: dict) -> dict:
             cfg = traefik.load_config()
             if not traefik.config_file().exists():
                 cfg["mode"] = opts["mode"]
-                if opts["mode"] == "server":
+                if opts["mode"] == "server" and not opts.get("via_tunnel"):
                     cfg["http_port"] = 80
                 else:
                     cfg["http_port"] = ((traefik.suggest_port(8081, 8099, {cfg["dashboard_port"]}) or 8081)

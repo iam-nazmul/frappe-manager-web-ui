@@ -184,28 +184,41 @@ async def setup(job: Job, cfg: dict) -> dict:
     await job.ok("Created network" if created else "Network already exists")
 
     existing = await docker.inspect([config.TRAEFIK_CONTAINER])
+    ports = [cfg["http_port"], cfg["dashboard_port"]] + ([443] if cfg["ssl"] else [])
+    srv = servers.current()
+    if not srv.local:
+        # Check before removing the running Traefik, so a taken port doesn't take every site offline.
+        await job.step(f"Checking ports on {srv.name}")
+        own = {int(b.get("HostPort") or 0) for e in existing
+               for binds in ((e.get("HostConfig") or {}).get("PortBindings") or {}).values() for b in binds or []}
+        try:
+            listening = await servers.listening_ports(srv)
+        except RuntimeError as exc:
+            await job.warn(f"{exc} - skipping the port check")
+            listening = set()
+        busy = [p for p in ports if p in listening and p not in own]
+        if busy:
+            hint = (" Another web server (e.g. nginx) is using them: keep Traefik in Local mode on a free port "
+                    "such as 8081 and publish sites with Cloudflare Tunnel." if {80, 443} & set(busy) else "")
+            raise JobError(f"Port(s) {', '.join(map(str, busy))} already in use on {srv.name}. "
+                           f"Traefik was left unchanged.{hint}")
+        await job.ok(f"Ports free on {srv.name}: {', '.join(map(str, ports))}")
     if existing:
         await job.step("Removing the existing Traefik container (sites keep running; routing pauses briefly)")
         r = await docker.docker("rm", "-f", config.TRAEFIK_CONTAINER, timeout=60)
         await job.log(r.text)
 
-    ports = [cfg["http_port"], cfg["dashboard_port"]] + ([443] if cfg["ssl"] else [])
-    busy = []
-    if servers.current().local:
+    if srv.local:
         await job.step("Checking ports")
         busy = [p for p in ports if not port_free(p)]
-    else:
-        await job.log(f"Port check skipped on remote server {servers.current().name} - "
-                      "Docker reports a conflict if a port is taken.")
-    if busy:
-        alt = suggest_port(skip={cfg["dashboard_port"]}) if cfg["mode"] == "local" else None
-        hint = f" Try HTTP port {alt}." if alt and cfg["http_port"] in busy else ""
-        raise JobError(f"Port(s) {', '.join(map(str, busy))} already in use on this machine.{hint}")
-    await job.ok(f"Ports free: {', '.join(map(str, ports))}")
+        if busy:
+            alt = suggest_port(skip={cfg["dashboard_port"]}) if cfg["mode"] == "local" else None
+            hint = f" Try HTTP port {alt}." if alt and cfg["http_port"] in busy else ""
+            raise JobError(f"Port(s) {', '.join(map(str, busy))} already in use on this machine.{hint}")
+        await job.ok(f"Ports free: {', '.join(map(str, ports))}")
 
     await job.step("Writing Traefik configuration")
     (config.TRAEFIK_DIR / "letsencrypt").mkdir(exist_ok=True)
-    srv = servers.current()
     if not srv.local:
         await servers.make_remote_dir(srv, letsencrypt_dir())
     compose_file().write_text(render(cfg))

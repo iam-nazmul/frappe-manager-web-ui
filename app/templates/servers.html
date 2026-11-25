@@ -36,9 +36,18 @@
     <div class="field"><label>SSH user</label><input type="text" name="user" placeholder="ubuntu" required spellcheck="false"></div>
     <div class="field"><label>SSH port</label><input type="number" name="port" value="22" min="1" max="65535"></div>
   </div>
-  <div class="field"><label>Private key on this machine</label>
-    <input type="text" name="key" value="{{ default_key }}" placeholder="~/.ssh/id_ed25519" required spellcheck="false">
-    <div class="hint">Password logins aren't supported. The key must not need a passphrase, or must be loaded in ssh-agent.</div></div>
+  <div class="choice-cards" style="margin-bottom:14px">
+    <label class="choice"><input type="radio" name="auth" value="password" checked><strong>🔑 Password</strong><span class="muted small">Log in once; the UI then installs its own key</span></label>
+    <label class="choice"><input type="radio" name="auth" value="key"><strong>🗝 SSH key</strong><span class="muted small">Use a key already on the server</span></label>
+  </div>
+  <div class="field auth-password"><label>SSH password</label>
+    <input type="password" name="password" autocomplete="off">
+    <div class="hint">Used once to add this app's key to <code>~/.ssh/authorized_keys</code> on the server. The password isn't saved.</div>
+    <label class="check" style="margin-top:10px"><input type="checkbox" name="install_docker" checked>
+      <span>Set up Docker if needed<small>Installs Docker and Compose with Docker's official script and adds the user to the <code>docker</code> group. Uses <code>sudo</code> with this password.</small></span></label></div>
+  <div class="field auth-key" hidden><label>Private key on this machine</label>
+    <input type="text" name="key" value="{{ default_key }}" placeholder="~/.ssh/id_ed25519" spellcheck="false">
+    <div class="hint">The key must not need a passphrase, or must be loaded in ssh-agent.</div></div>
   <button class="btn primary">Connect &amp; add</button>
   <p class="small muted" style="margin-top:10px">Connecting checks SSH, Docker and Docker Compose on the server. The first connection trusts the server's host key and remembers it.</p>
 </form>
@@ -47,9 +56,8 @@
   <div class="card">
     <h2>Server requirements</h2>
     <ol class="small" style="margin:0;padding-left:18px;line-height:1.7">
-      <li>Docker Engine and the Compose plugin installed.</li>
-      <li>The SSH user is in the <code>docker</code> group: <code>sudo usermod -aG docker &lt;user&gt;</code>, then log in again.</li>
-      <li>This machine's public key is in <code>~/.ssh/authorized_keys</code> of that user.</li>
+      <li>Docker Engine and the Compose plugin, with the SSH user in the <code>docker</code> group. With password login the UI can set this up for you (the user needs <code>sudo</code>).</li>
+      <li>Password login allowed (once, to install the key), or a public key already in <code>~/.ssh/authorized_keys</code>.</li>
     </ol>
   </div>
   <div class="card">
@@ -66,7 +74,7 @@
 {% block scripts %}
 <script>
 (() => {
-  const { $, $$, api, esc, toast, confirmAction } = FDM;
+  const { $, $$, api, esc, toast, confirmAction, runJob } = FDM;
 
   async function loadStatus() {
     $$(".js-status").forEach((el) => { el.textContent = "checking…"; el.className = "js-status muted small"; });
@@ -85,14 +93,27 @@
   loadStatus();
   $("#refresh").onclick = loadStatus;
 
+  const addForm = $("#add");
+  function authMode() {
+    const pw = addForm.auth.value === "password";
+    $(".auth-password").hidden = !pw; $(".auth-key").hidden = pw;
+    addForm.password.required = pw; addForm.key.required = !pw;
+  }
+  addForm.addEventListener("change", (e) => { if (e.target.name === "auth") authMode(); });
+  authMode();
+
   $("#add").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const btn = e.submitter; btn.disabled = true; btn.textContent = "Connecting…";
+    const fd = new FormData(addForm), body = Object.fromEntries(fd.entries());
+    body.install_docker = fd.has("install_docker");
+    const btn = e.submitter; btn.disabled = true;
     try {
-      const r = await api("/api/servers", { method: "POST", body: Object.fromEntries(new FormData(e.target).entries()) });
-      toast(`Added ${r.name}`, "ok");
-      setTimeout(() => location.reload(), 600);
-    } catch (err) { toast(err.message, "err"); btn.disabled = false; btn.textContent = "Connect & add"; }
+      await runJob("/api/servers", body, { onDone: (j) => {
+        btn.disabled = false;
+        if (j.status === "success") setTimeout(() => location.reload(), 1200);
+      } });
+      addForm.password.value = "";
+    } catch { btn.disabled = false; }
   });
 
   $$("[data-use]").forEach((b) => b.onclick = async () => {
@@ -110,7 +131,7 @@
     try {
       const r = await api("/api/servers/key", { method: "POST" });
       $("#pubkey-text").textContent = r.public_key; $("#pubkey").hidden = false;
-      $("#add").key.value = r.path;
+      $("#add").key.value = r.path; $("#add").auth.value = "key"; authMode();
     } catch (e) { toast(e.message, "err"); }
   };
   $("#copy-pub").onclick = () => navigator.clipboard.writeText($("#pubkey-text").textContent).then(() => toast("Copied", "ok"));

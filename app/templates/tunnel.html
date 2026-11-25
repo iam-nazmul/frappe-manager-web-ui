@@ -3,7 +3,7 @@
 {% block content %}
 {% set t = tunnel %}
 <div class="page-head">
-  <div><h1>Cloudflare Tunnel</h1><div class="sub">Publish sites on your Cloudflare domains over HTTPS, with no open ports or port forwarding. The site is online while this machine is on.</div></div>
+  <div><h1>Cloudflare Tunnel</h1><div class="sub">Publish sites on your Cloudflare domains over HTTPS, with no open ports or port forwarding. Sites are online while {{ 'this machine' if server.local else 'the server ' ~ server.name }} is on.{% if not server.local %} Each server needs its own tunnel.{% endif %}</div></div>
   <div class="row">
     {% if t.exists %}
       <button class="btn" data-t="restart">↻ Restart</button>
@@ -15,7 +15,7 @@
 <div class="grid cols-3" style="margin-bottom:16px">
   <div class="card stat"><div class="label"><span class="dot {{ 'on' if t.logged_in else 'off' }}"></span>Cloudflare account</div>
     <div class="value">{{ 'Logged in' if t.logged_in else 'Not logged in' }}</div>
-    <div class="muted small mono">{{ t.cloudflared_dir }}</div></div>
+    <div class="muted small">{% if t.zones %}Domains: {{ t.zones | join(', ') }}{% else %}<span class="mono">{{ t.cloudflared_dir }}</span>{% endif %}</div></div>
   <div class="card stat"><div class="label"><span class="dot {{ 'on' if t.has_credentials else ('mid' if t.tunnel_id else 'off') }}"></span>Tunnel</div>
     <div class="value">{{ t.tunnel_name or '—' }}</div>
     <div class="muted small mono">{{ t.tunnel_id or 'not chosen' }}</div></div>
@@ -35,8 +35,8 @@
 <div class="stack">
   <div class="card">
     <div class="card-head"><h2>1 · Log in to Cloudflare</h2>
-      <button class="btn sm {{ '' if t.logged_in else 'primary' }}" id="login">{{ 'Log in again' if t.logged_in else 'Log in' }}</button></div>
-    <p class="small muted">Opens a task with a Cloudflare link. Open it, sign in and pick the domain your sites use. Hostnames on other domains can't be published with this login.</p>
+      <button class="btn sm {{ '' if t.logged_in else 'primary' }}" id="login">{{ 'Add a domain' if t.logged_in else 'Log in' }}</button></div>
+    <p class="small muted">Opens a task with a Cloudflare link. Open it, sign in and pick a domain. Log in once per domain; each site is published with the login for its own domain.{% if t.zones %} Logged in for: <strong>{{ t.zones | join(', ') }}</strong>.{% endif %}</p>
   </div>
 
   <form class="card" id="use">

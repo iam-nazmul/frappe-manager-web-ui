@@ -52,19 +52,41 @@ Put it behind HTTPS if it is reachable from the internet.
 The UI can control Docker on remote machines over SSH, so one UI manages all your servers.
 
 **On each server:** install Docker Engine with the Compose plugin, add the SSH user to the `docker` group
-(`sudo usermod -aG docker <user>`, then log in again), and put a public key in that user's `~/.ssh/authorized_keys`.
-The Servers page can generate a dedicated key for the UI and show its public key.
+(`sudo usermod -aG docker <user>`, then log in again).
 
-**In the UI:** open **Servers** → *Add a server* (name, host, SSH user, port, private key) → **Connect & add**. The UI
-checks SSH, Docker and Compose before saving. Switch between servers with the picker at the top of the sidebar.
+**In the UI:** open **Servers** → *Add a server* (name, host, SSH user, port) and choose how to log in:
+
+- **Password:** the UI logs in once with the password, adds its own SSH key to `~/.ssh/authorized_keys` on the
+  server, and uses that key from then on. The password isn't saved. The server must allow password logins.
+  With **Set up Docker if needed** ticked, it also installs Docker and Compose (Docker's official script) and adds
+  the user to the `docker` group, using `sudo` with the same password. A `~/.ssh` left owned by root is repaired.
+- **SSH key:** use a private key on this machine whose public key is already on the server. The Servers page can
+  generate a dedicated key for the UI and show its public key.
+
+Press **Connect & add**. The UI checks SSH, Docker and Compose before saving. Switch between servers with the picker at the top of the sidebar.
 
 - Sites, Traefik, logs, terminal, bench commands, apps, backups and file transfers all work on remote servers.
   The UI keeps each server's compose files under `~/frappe-docker-manager/servers/<name>/` and copies the config
   files that containers mount to `~/frappe-docker-manager/` on the server.
-- Remote servers don't offer the VS Code apps folder, `/etc/hosts` helper, free-port finder or Cloudflare Tunnel.
-  Those features need files on this machine. A server with a public IP can use Traefik with Let's Encrypt instead.
-- Only key-based login is supported. The key needs no passphrase, or must be loaded in `ssh-agent`.
+- Remote servers don't offer the VS Code apps folder, `/etc/hosts` helper or free-port finder; those need files on
+  this machine.
+- Cloudflare Tunnel works on remote servers too, and is the easiest way to publish a site when another web server
+  (e.g. nginx) already uses ports 80/443 there. Give each server its own tunnel. The Cloudflare login stays on this
+  machine; only the tunnel's credentials file and connector config are copied to the server.
+- After setup, the UI always logs in with a key. A key you choose needs no passphrase, or must be loaded in `ssh-agent`.
 - The first connection trusts the server's host key and stores it in `~/frappe-docker-manager/ssh/known_hosts`.
+
+### Deploying a public site in one step
+
+In **New site**, choose **VPS / server**, then:
+
+1. **Server:** pick a saved server, or *New server…* and enter its public IP, SSH user, port and password.
+   A new server is connected and gets Docker if it's missing.
+2. **Public access:** *Publish on Cloudflare* creates the DNS record and serves the site over HTTPS through a
+   Cloudflare Tunnel (log in once on the Cloudflare Tunnel page first). It works even when another web server uses
+   ports 80/443 on the server. Public sites need an Administrator password other than `admin`.
+
+The task log shows each step; the site is live at `https://<domain>` when it finishes.
 
 ## Publishing a site with Cloudflare Tunnel
 
@@ -72,6 +94,8 @@ Use this to make a site public without opening ports, e.g. from a PC behind a ho
 
 1. Create the site on its real domain (VPS / server mode), e.g. `erp.example.com`.
 2. Open **Cloudflare Tunnel** → **Log in**. Open the link shown in the task log and authorise the domain.
+   Log in once per domain (**Add a domain**); each site is published with the login for its own domain.
+   An existing DNS record with the site's name (e.g. an A record) is replaced.
 3. Choose an existing tunnel or type a new name → **Use tunnel**.
 4. Publish the site there or on its Overview tab. The UI creates the DNS record, starts a `cloudflared` container (restarts with Docker), and sets the site's `host_name` to `https://<domain>`.
 

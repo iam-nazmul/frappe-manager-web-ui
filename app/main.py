@@ -64,10 +64,6 @@ async def traefik_page(request: Request):
 
 @app.get("/tunnel", response_class=HTMLResponse)
 async def tunnel_page(request: Request):
-    if not servers.current().local:
-        return page(request, "notice.html", nav="tunnel", heading="Cloudflare Tunnel",
-                    message="Cloudflare Tunnel is managed for this machine only. A remote server usually has a "
-                            "public IP: use Traefik with Let's Encrypt there, or switch to 'This machine' in the sidebar.")
     all_sites = await sites.discover()
     public = [{"domain": s["domain"], "project": s["project"]} for s in all_sites
               if not s["domain"].endswith((".localhost", ".local", ".test"))]
@@ -78,7 +74,8 @@ async def tunnel_page(request: Request):
 @app.get("/sites/new", response_class=HTMLResponse)
 async def new_site_page(request: Request):
     tst = await traefik.status()
-    return page(request, "site_new.html", traefik=tst, dev_root=str(config.DEV_APPS_ROOT))
+    return page(request, "site_new.html", traefik=tst, dev_root=str(config.DEV_APPS_ROOT),
+                tunnel_ready=tunnel.cert_path().exists())
 
 
 @app.get("/sites/{project}", response_class=HTMLResponse)
@@ -220,14 +217,16 @@ async def api_servers_status():
 
 @app.post("/api/servers")
 async def api_servers_add(request: Request):
+    form = await request.json()
+    password = str(form.get("password", "")) if form.get("auth") == "password" else ""
     try:
-        srv = servers.validate(await request.json())
-        srv = await servers.connect(srv)
+        if form.get("auth") == "password" and not password:
+            raise ValueError("Enter the SSH password")
+        srv = servers.validate(form)
     except ValueError as exc:
-        servers.write_ssh_files()  # drop the trial entry
         return bad(str(exc))
-    servers.add(srv)
-    return {"ok": True, "name": srv.name, "remote_home": srv.remote_home}
+    return job_response(jobs.start(f"Add server {srv.name}", f"server-{srv.name}",
+                                   lambda j: servers.add_server(j, srv, password, bool(form.get("install_docker")))))
 
 
 @app.post("/api/servers/{name}/delete")
@@ -263,8 +262,6 @@ async def api_servers_key():
 
 @app.get("/api/tunnel/tunnels")
 async def api_tunnel_list():
-    if not servers.current().local:
-        return bad("Cloudflare Tunnel is managed for this machine only")
     try:
         return await tunnel.list_tunnels()
     except (RuntimeError, ValueError) as exc:
@@ -314,8 +311,6 @@ async def api_tunnel_logs(lines: int = 200):
 async def api_tunnel_action(action: str):
     if action not in ("start", "stop", "restart"):
         raise HTTPException(404)
-    if not servers.current().local:
-        return bad("Cloudflare Tunnel is managed for this machine only")
     r = await tunnel.control(action)
     return {"ok": r.ok, "output": r.text}
 
@@ -324,14 +319,52 @@ async def api_tunnel_action(action: str):
 
 @app.post("/api/sites")
 async def api_create_site(request: Request):
+    return await api_deploy(request)
+
+
+@app.post("/api/deploy")
+async def api_deploy(request: Request):
+    """New-site wizard: create a site on a chosen (or new) server and optionally publish it."""
+    form = await request.json()
+    target = str(form.get("target") or servers.current().name)
+    choice = form.get("publish") or "auto"
+    domain = str(form.get("domain", "")).strip().lower()
+    zones = await tunnel.index_certs() if tunnel.cert_path().exists() else []
+    # VPS-mode sites go public by default when there is a Cloudflare login for their domain.
+    publish = choice == "tunnel" or (choice == "auto" and form.get("mode") == "server" and bool(tunnel.zone_for(domain)))
+    password = str(form.get("server_password") or "")
     try:
-        opts = sites.validate_new(await request.json())
+        opts = sites.validate_new(form)
+        if target == "__new__":
+            if not password:
+                raise ValueError("Enter the server's SSH password")
+            srv = servers.validate({"name": form.get("server_name"), "host": form.get("server_host"),
+                                    "user": form.get("server_user"), "port": form.get("server_port"),
+                                    "auth": "password"})
+        else:
+            srv = servers.get(target)
+            if not srv:
+                raise ValueError("Unknown server")
+        if publish:
+            if opts["domain"].endswith((".localhost", ".local", ".test")):
+                raise ValueError("A public site needs a real domain from your Cloudflare account")
+            if not tunnel.zone_for(opts["domain"]):
+                raise ValueError(f"No Cloudflare login for {opts['domain']} (logged in for: {', '.join(zones) or 'none'}). "
+                                 "Cloudflare Tunnel page → Log in, and pick that domain.")
+            if opts["admin_password"] == "admin":
+                raise ValueError("Choose an Administrator password other than 'admin' for a public site")
+            opts["via_tunnel"] = True
+            opts["ssl"] = False  # Cloudflare serves HTTPS
     except ValueError as exc:
         return bad(str(exc))
-    if await sites.get(opts["project"]):
-        return bad(f"A site named {opts['domain']} already exists")
-    job = jobs.start(f"Create site {opts['domain']}", opts["project"], lambda j: sites.create(j, opts))
-    return job_response(job)
+    with servers.using(srv):
+        if target != "__new__" and await sites.get(opts["project"]):
+            return bad(f"A site named {opts['domain']} already exists on {srv.name}")
+        job = jobs.start(f"Deploy {opts['domain']} to {srv.name}", opts["project"],
+                         lambda j: sites.deploy(j, opts, srv, password, target == "__new__", publish))
+    resp = job_response(job)
+    resp.set_cookie(servers.COOKIE, srv.name, path="/", samesite="lax", httponly=True, max_age=10 * 365 * 86400)
+    return resp
 
 
 @app.get("/api/sites/{project}")
