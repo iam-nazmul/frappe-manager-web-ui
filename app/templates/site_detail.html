@@ -389,12 +389,9 @@
   $("#get-app").addEventListener("submit", (e) => {
     e.preventDefault();
     const f = e.target, src = f.source.value.trim();
-    const name = src.replace(/\.git$/, "").split("/").pop().replace(/-/g, "_");
-    runJob(`/api/sites/${P}/bench`, { command: "get-app", params: { source: src, branch: f.branch.value.trim() } }, {
-      onDone: (job) => {
-        loadApps();
-        if (job.status === "success" && f.install.checked) bench("install-app", { app: name });
-      },
+    // Download and install run as one server-side task, so closing this page doesn't skip the install.
+    runJob(`/api/sites/${P}/bench`, { command: "get-app", params: { source: src, branch: f.branch.value.trim(), install: f.install.checked } }, {
+      onDone: () => loadApps(),
     });
   });
   $("#install-app").addEventListener("submit", async (e) => {

@@ -390,6 +390,8 @@ async def api_bench(request: Request, project: str):
     command = body.get("command", "")
     params = body.get("params") or {}
     title = f"bench {command}" + (f" {params.get('source') or params.get('app') or ''}" if params else "")
+    if command == "get-app" and params.get("install"):
+        title = f"Get & install {params.get('source', '')}"
     return job_response(jobs.start(title.strip(), project, lambda j: sites.bench(site, j, command, params)))
 
 

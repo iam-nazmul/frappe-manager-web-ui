@@ -655,6 +655,12 @@ async def bench(site: dict, job: Job, command: str, params: dict) -> dict:
             raise JobError("Invalid branch name")
         cmd = [*base, "get-app", *(["--branch", branch] if branch else []), src]
         restart_after = True
+        install_after = bool(params.get("install"))
+        guess = re.sub(r"\.git$", "", src.rstrip("/")).split("/")[-1].split(":")[-1].replace("-", "_").lower()
+        before = await _bench_apps(app)
+        if install_after and guess in before:
+            await job.warn(f"{guess} is already in the bench - skipping the download")
+            cmd = None
     elif command in ("install-app", "uninstall-app"):
         name = (params.get("app") or "").strip()
         if not APP_RE.match(name):
@@ -666,14 +672,17 @@ async def bench(site: dict, job: Job, command: str, params: dict) -> dict:
     else:
         raise JobError(f"Unknown bench command {command}")
 
-    await job.step("$ " + " ".join(cmd[cmd.index("bench"):]))
-    code = await docker.stream(cmd, job.log)
-    if code != 0:
-        if command == "install-app":
-            await job.warn("If this failed with 'Access denied', run 'Fix DB permissions' and try again.")
-        raise JobError(f"bench {command} exited with code {code}")
+    if cmd:
+        await _run_bench(job, cmd, command)
     if command == "get-app":
         await docker.docker("exec", "-w", config.BENCH_DIR, app, "bash", "-c", "ls -1 apps > sites/apps.txt")
+        if install_after:
+            new = sorted((await _bench_apps(app)) - before)
+            name = new[0] if len(new) == 1 else guess
+            if not APP_RE.match(name):
+                raise JobError("Downloaded, but could not tell the app name - install it from the Apps list")
+            await _run_bench(job, [*on_site, "install-app", name], "install-app")
+            await job.ok(f"Installed {name} on {domain}")
     if restart_after:
         await job.step("Restarting Frappe processes")
         r = await supervisor_action(site, "restart", "all")
@@ -683,18 +692,31 @@ async def bench(site: dict, job: Job, command: str, params: dict) -> dict:
     return {}
 
 
+async def _run_bench(job: Job, cmd: list[str], command: str) -> None:
+    await job.step("$ " + " ".join(cmd[cmd.index("bench"):]))
+    code = await docker.stream(cmd, job.log)
+    if code != 0:
+        if command == "install-app":
+            await job.warn("If this failed with 'Access denied', run 'Fix DB permissions' and try again.")
+        raise JobError(f"bench {command} exited with code {code}")
+
+
+async def _bench_apps(container: str) -> set[str]:
+    r = await docker.docker("exec", "-w", config.BENCH_DIR, container, "sh", "-c",
+                            'for d in apps/*/; do basename "$d"; done', timeout=30)
+    if not r.ok:
+        raise RuntimeError(r.text or "Could not list the bench apps folder")
+    return {a for a in r.out.split() if APP_RE.match(a)}
+
+
 async def list_apps(site: dict) -> list[dict]:
     """Apps in the bench, flagged with whether they are installed on this site."""
     app = site["app_container"]
-    bench_r, site_r = await asyncio.gather(
-        docker.docker("exec", "-w", config.BENCH_DIR, app, "sh", "-c",
-                      'for d in apps/*/; do basename "$d"; done', timeout=30),
+    bench_apps, site_r = await asyncio.gather(
+        _bench_apps(app),
         docker.docker("exec", "-w", config.BENCH_DIR, app, "bench", "--site", site["domain"], "list-apps",
                       timeout=60),
     )
-    if not bench_r.ok:
-        raise RuntimeError(bench_r.text or "Could not list the bench apps folder")
-    bench_apps = [a for a in bench_r.out.split() if APP_RE.match(a)]
     installed: dict[str, dict] = {}
     for line in site_r.out.splitlines():
         parts = line.split()
