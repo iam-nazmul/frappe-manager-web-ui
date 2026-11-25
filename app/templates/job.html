@@ -3,7 +3,8 @@
 {% block content %}
 <div class="page-head">
   <div><h1>{{ job.title }}</h1><div class="sub">Target <code>{{ job.scope }}</code> · started {{ job.as_dict().started }}</div></div>
-  <div class="row"><span class="pill {{ job.status }}" id="status">{{ job.status }}</span>
+  <div class="row"><span class="muted mono" id="timer" title="Elapsed time">⏱ {{ job.as_dict().duration_text }}</span>
+    <span class="pill {{ job.status }}" id="status">{{ job.status }}</span>
     {% if job.scope not in ('traefik', 'system') %}<a class="btn" href="/sites/{{ job.scope }}">Site →</a>{% endif %}</div>
 </div>
 <div class="console" id="console" style="max-height:none;min-height:60vh"></div>
@@ -14,6 +15,7 @@
 (() => {
   const { $, esc, streamJob } = FDM;
   streamJob({{ job.id | tojson }}, $("#console"), {
+    timerEl: $("#timer"),
     onStatus: (s) => { $("#status").className = `pill ${s}`; $("#status").textContent = s; },
     onDone: (job) => { if (job.result && job.result.url) $("#result").innerHTML = `<a class="btn primary" href="${esc(job.result.url)}" target="_blank">Open ${esc(job.result.url)} ↗</a>`; },
   });

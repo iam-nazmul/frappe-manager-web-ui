@@ -52,9 +52,32 @@
     return div;
   }
 
-  function streamJob(jobId, consoleEl, { onDone, onStatus } = {}) {
+  function fmtDuration(sec) {
+    const s = Math.max(0, Math.round(sec));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+    const pad = (n) => String(n).padStart(2, "0");
+    if (h) return `${h}h ${pad(m)}m ${pad(r)}s`;
+    return m ? `${m}m ${pad(r)}s` : `${r}s`;
+  }
+
+  /** Stream a job's log into consoleEl; if timerEl is given, show a live elapsed / final duration. */
+  function streamJob(jobId, consoleEl, { onDone, onStatus, timerEl } = {}) {
     consoleEl.innerHTML = "";
+    let tick = null;
+    const stopTimer = () => { if (tick) { clearInterval(tick); tick = null; } };
     const es = new EventSource(`/api/jobs/${jobId}/stream`);
+    es.addEventListener("meta", (ev) => {
+      // The server replays the whole log on (re)connect, so start from a clean console.
+      consoleEl.innerHTML = "";
+      const job = JSON.parse(ev.data);
+      if (!timerEl) return;
+      stopTimer();
+      if (job.status !== "running") { timerEl.textContent = `⏱ ${job.duration_text}`; return; }
+      const base = job.elapsed, t0 = performance.now();
+      const paint = () => { timerEl.textContent = `⏱ ${fmtDuration(base + (performance.now() - t0) / 1000)}`; };
+      paint();
+      tick = setInterval(paint, 1000);
+    });
     es.onmessage = (ev) => {
       const atBottom = consoleEl.scrollHeight - consoleEl.scrollTop - consoleEl.clientHeight < 60;
       consoleEl.appendChild(renderLine(JSON.parse(ev.data)));
@@ -62,11 +85,15 @@
     };
     es.addEventListener("done", (ev) => {
       es.close();
+      stopTimer();
       const job = JSON.parse(ev.data);
+      if (timerEl) timerEl.textContent = `⏱ ${job.duration_text}`;
       onStatus && onStatus(job.status);
       onDone && onDone(job);
     });
     es.onerror = () => { /* EventSource reconnects automatically; the server replays the log */ };
+    const close = es.close.bind(es);
+    es.close = () => { stopTimer(); close(); };
     return es;
   }
 
@@ -77,6 +104,7 @@
       const el = document.createElement("div");
       el.className = "drawer";
       el.innerHTML = `<div class="drawer-head"><span class="pill running js-status">running</span><strong class="js-title"></strong>
+        <span class="muted small mono js-timer" title="Elapsed time"></span>
         <a class="btn sm ghost js-open" target="_blank" title="Open in new tab">↗</a>
         <button class="btn sm ghost js-min" title="Minimise">–</button><button class="btn sm ghost js-close" title="Close">✕</button></div>
         <div class="console js-console"></div>`;
@@ -94,10 +122,12 @@
       $(".js-open", el).href = `/jobs/${jobId}`;
       const status = $(".js-status", el);
       status.className = "pill running js-status"; status.innerHTML = `running`;
+      $(".js-timer", el).textContent = "";
       this.es = streamJob(jobId, $(".js-console", el), {
+        timerEl: $(".js-timer", el),
         onStatus: (s) => { status.className = `pill ${s} js-status`; status.textContent = s; },
         onDone: (job) => {
-          toast(`${job.title}: ${job.status}`, job.status === "success" ? "ok" : "err");
+          toast(`${job.title}: ${job.status} in ${job.duration_text}`, job.status === "success" ? "ok" : "err");
           onDone && onDone(job);
         },
       });

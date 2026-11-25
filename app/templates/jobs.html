@@ -7,7 +7,7 @@
   <table><thead><tr><th>Task</th><th>Target</th><th>Status</th><th class="hide-sm">Started</th><th class="hide-sm">Duration</th></tr></thead><tbody>
   {% for j in jobs %}{% set d = j.as_dict() %}
     <tr><td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td><td class="mono small">{{ j.scope }}</td>
-      <td><span class="pill {{ j.status }}">{{ j.status }}</span></td><td class="hide-sm muted">{{ d.started }}</td><td class="hide-sm muted">{{ d.duration }}s</td></tr>
+      <td><span class="pill {{ j.status }}">{{ j.status }}</span></td><td class="hide-sm muted">{{ d.started }}</td><td class="hide-sm muted">{{ d.duration_text }}</td></tr>
   {% endfor %}</tbody></table>
   {% else %}<div class="empty">No tasks yet.</div>{% endif %}
 </div>

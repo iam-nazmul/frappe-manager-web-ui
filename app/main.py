@@ -137,6 +137,7 @@ async def api_job_stream(request: Request, job_id: str):
 
     async def gen():
         seen = 0
+        yield f"event: meta\ndata: {json.dumps(job.as_dict())}\n\n"
         while True:
             if await request.is_disconnected():
                 return
