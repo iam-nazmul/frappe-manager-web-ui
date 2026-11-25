@@ -74,7 +74,7 @@
       <th class="hide-sm">Containers</th><th></th></tr></thead><tbody>${list.map((s) => `
       <tr>
         <td><a class="domain" href="/sites/${esc(s.project)}">${esc(s.domain)}</a><br>
-          <a class="small" href="${esc(s.url)}" target="_blank">${esc(s.url)} ↗</a>
+          <a class="small" href="${esc(s.url)}" target="_blank">${esc(s.url)} ↗</a>${s.public_url ? ` · <a class="small" href="${esc(s.public_url)}" target="_blank" title="Public via Cloudflare Tunnel">🌐 ${esc(s.public_url)} ↗</a>` : ""}
           ${s.managed ? "" : ' <span class="pill plain small" title="Created by the CLI scripts">CLI</span>'}</td>
         <td><span class="pill ${stateClass(s.state)}">${esc(s.state)}</span></td>
         <td class="hide-sm mono">${esc(s.version)}</td>

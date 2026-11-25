@@ -8,7 +8,7 @@
   <div>
     <div class="row"><h1>{{ site.domain }}</h1><span class="pill {{ site.state }}" id="site-state">{{ site.state }}</span>
       {% if not site.managed %}<span class="pill plain" title="Created by the original CLI scripts">CLI-created</span>{% endif %}</div>
-    <div class="sub"><a href="{{ site.url }}" target="_blank">{{ site.url }} ↗</a> · <span class="mono">{{ site.version }}</span> · {{ 'VPS / server' if site.mode == 'server' else 'Local' }}{{ ' · HTTPS' if site.ssl }}</div>
+    <div class="sub"><a href="{{ site.url }}" target="_blank">{{ site.url }} ↗</a> · {% if site.public_url %}<a href="{{ site.public_url }}" target="_blank" title="Public via Cloudflare Tunnel">🌐 {{ site.public_url }} ↗</a> · {% endif %}<span class="mono">{{ site.version }}</span> · {{ 'VPS / server' if site.mode == 'server' else 'Local' }}{{ ' · HTTPS' if site.ssl }}</div>
   </div>
   <div class="row">
     <a class="btn primary" href="{{ site.url }}" target="_blank">Open site ↗</a>
@@ -75,6 +75,17 @@
       </dl>
       <p class="muted small" style="margin-top:10px">Stored in <code>.env</code> next to the compose file. Changing the desk password here: Apps &amp; bench → Set admin password.</p>
     </div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <div class="card-head"><h2>Public access (Cloudflare Tunnel)</h2>
+      {% if site.public_url %}<button class="btn sm danger" id="tunnel-unpublish">Unpublish</button>
+      {% elif tunnel.tunnel_id and site.mode == 'server' %}<button class="btn sm primary" id="tunnel-publish">Publish</button>{% endif %}</div>
+    <p class="small muted" style="margin:0">
+      {% if site.public_url %}Live at <a href="{{ site.public_url }}" target="_blank">{{ site.public_url }} ↗</a> while this machine is on.
+      {% elif site.mode != 'server' %}<code>{{ site.domain }}</code> is a local-only name. Create the site on a domain in your Cloudflare account to publish it.
+      {% elif not tunnel_ready %}Log in to Cloudflare and choose a tunnel on the <a href="/tunnel">Cloudflare Tunnel</a> page first.
+      {% elif not tunnel.tunnel_id %}Choose a tunnel on the <a href="/tunnel">Cloudflare Tunnel</a> page first.
+      {% else %}Not public. Publishing creates the DNS record <code>{{ site.domain }}</code> → tunnel and serves it over HTTPS.{% endif %}</p>
   </div>
 </section>
 
@@ -356,6 +367,14 @@
   $("#log-load").onclick = () => { viewer.load($("#log-source").value, $("#log-lines").value); setFollowBtn(); };
   $("#log-follow").onclick = () => { viewer.following ? viewer.stop() : viewer.follow($("#log-source").value, $("#log-lines").value); setFollowBtn(); };
   $("#log-clear").onclick = () => { $("#log-console").textContent = ""; };
+
+  /* ---------- tunnel ---------- */
+  const reloadOk = (j) => { if (j.status === "success") setTimeout(() => location.reload(), 1200); };
+  $("#tunnel-publish")?.addEventListener("click", () => runJob("/api/tunnel/publish", { project: P }, { onDone: reloadOk }));
+  $("#tunnel-unpublish")?.addEventListener("click", async () => {
+    if (await confirmAction(`Stop serving https://${DOMAIN} through the tunnel?`, { danger: true, okText: "Unpublish" }))
+      runJob("/api/tunnel/unpublish", { hostname: DOMAIN }, { onDone: reloadOk });
+  });
 
   /* ---------- bench ---------- */
   const bench = (command, params, title) => runJob(`/api/sites/${P}/bench`, { command, params }, { title, onDone: (j) => {

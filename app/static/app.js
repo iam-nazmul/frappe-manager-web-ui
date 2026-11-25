@@ -48,7 +48,9 @@
   function renderLine(line, showTs = true) {
     const div = document.createElement("div");
     div.className = `l-${line.level}`;
-    div.innerHTML = (showTs ? `<span class="ts">${String(line.t.toFixed ? line.t.toFixed(1) : line.t).padStart(6)}s</span>` : "") + esc(line.text);
+    const text = esc(line.text).replace(/https?:\/\/[^\s<]+?(?=&quot;|&#39;|[\s<]|$)/g,
+      (u) => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
+    div.innerHTML = (showTs ? `<span class="ts">${String(line.t.toFixed ? line.t.toFixed(1) : line.t).padStart(6)}s</span>` : "") + text;
     return div;
   }
 
@@ -103,21 +105,83 @@
       if (this.el) return this.el;
       const el = document.createElement("div");
       el.className = "drawer";
-      el.innerHTML = `<div class="drawer-head"><span class="pill running js-status">running</span><strong class="js-title"></strong>
+      el.innerHTML = `<div class="drawer-head" title="Drag to move · double-click to reset"><span class="pill running js-status">running</span><strong class="js-title"></strong>
         <span class="muted small mono js-timer" title="Elapsed time"></span>
         <a class="btn sm ghost js-open" target="_blank" title="Open in new tab">↗</a>
         <button class="btn sm ghost js-min" title="Minimise">–</button><button class="btn sm ghost js-close" title="Close">✕</button></div>
         <div class="console js-console"></div>`;
       document.body.appendChild(el);
       $(".js-close", el).onclick = () => { el.classList.remove("open"); this.es && this.es.close(); };
-      $(".js-min", el).onclick = () => el.classList.toggle("min");
+      $(".js-min", el).onclick = () => { el.classList.toggle("min"); this.clamp(); };
       this.el = el;
+      this.initFloating();
       return el;
     },
+
+    /* ---- floating window: drag by the header, resize from the corner, remember both ---- */
+    KEY: "fdm.taskWindow",
+    clamp() {
+      const el = this.el;
+      if (!el || !el.classList.contains("open")) return;
+      const r = el.getBoundingClientRect();
+      // Keep at least part of the header reachable on screen.
+      el.style.left = `${Math.min(Math.max(0, r.left), Math.max(0, innerWidth - 140))}px`;
+      el.style.top = `${Math.min(Math.max(0, r.top), Math.max(0, innerHeight - 48))}px`;
+    },
+    save() {
+      const { left, top, width, height } = this.el.style;
+      try { localStorage.setItem(this.KEY, JSON.stringify({ left, top, width, height })); } catch { /* storage unavailable */ }
+    },
+    place(reset = false) {
+      const el = this.el;
+      let saved = null;
+      if (!reset) { try { saved = JSON.parse(localStorage.getItem(this.KEY) || "null"); } catch { /* ignore */ } }
+      if (saved && saved.left) {
+        Object.assign(el.style, saved);
+      } else {
+        const w = Math.min(720, innerWidth - 36), h = Math.min(380, innerHeight - 36);
+        Object.assign(el.style, { width: `${w}px`, height: `${h}px`, left: `${innerWidth - w - 18}px`, top: `${innerHeight - h - 18}px` });
+      }
+      this.clamp();
+    },
+    initFloating() {
+      const el = this.el, head = $(".drawer-head", el);
+      head.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0 || e.target.closest("button, a")) return;
+        const r = el.getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
+        head.setPointerCapture(e.pointerId);
+        el.classList.add("dragging");
+        const move = (ev) => {
+          el.style.left = `${Math.min(Math.max(0, ev.clientX - dx), innerWidth - 140)}px`;
+          el.style.top = `${Math.min(Math.max(0, ev.clientY - dy), innerHeight - 48)}px`;
+        };
+        const up = () => {
+          head.removeEventListener("pointermove", move);
+          head.removeEventListener("pointerup", up);
+          head.removeEventListener("pointercancel", up);
+          el.classList.remove("dragging");
+          this.save();
+        };
+        head.addEventListener("pointermove", move);
+        head.addEventListener("pointerup", up);
+        head.addEventListener("pointercancel", up);
+      });
+      head.addEventListener("dblclick", (e) => { if (!e.target.closest("button, a")) { this.place(true); this.save(); } });
+      // The native corner handle (CSS resize) changes inline width/height; persist them.
+      let t = null;
+      new ResizeObserver(() => {
+        if (!el.classList.contains("open") || el.classList.contains("min")) return;
+        clearTimeout(t); t = setTimeout(() => this.save(), 250);
+      }).observe(el);
+      addEventListener("resize", () => this.clamp());
+    },
+
     open(jobId, title, onDone) {
       const el = this.ensure();
       this.es && this.es.close();
+      const wasOpen = el.classList.contains("open");
       el.classList.add("open"); el.classList.remove("min");
+      if (!wasOpen) this.place();
       $(".js-title", el).textContent = title || "Task";
       $(".js-open", el).href = `/jobs/${jobId}`;
       const status = $(".js-status", el);

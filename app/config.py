@@ -13,6 +13,7 @@ DATA_DIR = Path(os.environ.get("FDM_DATA_DIR", Path.home() / "frappe-docker-mana
 SITES_DIR = DATA_DIR / "sites"
 TRAEFIK_DIR = DATA_DIR / "traefik"
 JOBS_DIR = DATA_DIR / "jobs"
+TUNNEL_DIR = DATA_DIR / "tunnel"
 
 # Host folder that receives the bench "apps" directory for local development (VS Code editing).
 DEV_APPS_ROOT = Path(os.environ.get("FDM_DEV_DIR", Path.home() / "frappe-docker")).expanduser()
@@ -32,5 +33,10 @@ SUPERVISOR_CONF = "/home/frappe/supervisor/supervisord.conf"
 SUPERVISORCTL = "/home/frappe/.local/bin/supervisorctl"
 BENCH_DIR = "/home/frappe/frappe-bench"
 
-for d in (SITES_DIR, TRAEFIK_DIR, JOBS_DIR):
+# Cloudflare Tunnel. Account files (cert.pem, <tunnel-id>.json) are shared with a host cloudflared install.
+CLOUDFLARED_DIR = Path(os.environ.get("FDM_CLOUDFLARED_DIR", Path.home() / ".cloudflared")).expanduser()
+CLOUDFLARED_IMAGE = os.environ.get("FDM_CLOUDFLARED_IMAGE", "cloudflare/cloudflared:2026.11.2")
+TUNNEL_CONTAINER = "cloudflared"
+
+for d in (SITES_DIR, TRAEFIK_DIR, JOBS_DIR, TUNNEL_DIR):
     d.mkdir(parents=True, exist_ok=True)

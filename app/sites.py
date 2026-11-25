@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import config, docker, traefik, versions
+from . import config, docker, traefik, tunnel, versions
 from .jobs import Job, JobError
 
 DOMAIN_RE = re.compile(r"^(?=.{4,200}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$")
@@ -135,6 +135,7 @@ def _build_site(project: str, items: list[dict], app: dict | None, tstatus: dict
         "dev_mount": meta.get("dev_mount", False),
         "apps_dir": meta.get("apps_dir", ""),
         "url": traefik.site_url(domain, ssl, http_port),
+        "public_url": f"https://{domain}" if domain in tunnel.public_hostnames() else "",
         "created": meta.get("created", ""),
         "env": env,
     }

@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Str
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import config, docker, jobs, sites, terminal, traefik, versions
+from . import config, docker, jobs, sites, terminal, traefik, tunnel, versions
 from .security import GuardMiddleware
 
 app = FastAPI(title="Frappe Docker Manager", docs_url="/api/docs", redoc_url=None)
@@ -59,6 +59,15 @@ async def traefik_page(request: Request):
                 compose=traefik.compose_text(), has_cf_token="CF_DNS_API_TOKEN=" in traefik._read_env())
 
 
+@app.get("/tunnel", response_class=HTMLResponse)
+async def tunnel_page(request: Request):
+    all_sites = await sites.discover()
+    public = [{"domain": s["domain"], "project": s["project"]} for s in all_sites
+              if not s["domain"].endswith((".localhost", ".local", ".test"))]
+    return page(request, "tunnel.html", tunnel=await tunnel.status(), public_sites=public,
+                config_text=tunnel.config_text())
+
+
 @app.get("/sites/new", response_class=HTMLResponse)
 async def new_site_page(request: Request):
     tst = await traefik.status()
@@ -69,6 +78,7 @@ async def new_site_page(request: Request):
 async def site_page(request: Request, project: str):
     site = await require_site(project)
     return page(request, "site_detail.html", site=site, hosts=sites.hosts_status(site["domain"]),
+                tunnel=tunnel.load_state(), tunnel_ready=tunnel.cert_path().exists(),
                 bench_commands=sites.BENCH_COMMANDS, log_sources=list(sites.LOG_SOURCES),
                 jobs=jobs.recent(10, project), running_job=jobs.running_for(project))
 
@@ -184,6 +194,63 @@ async def api_traefik_action(action: str):
 async def api_traefik_logs(lines: int = 200):
     r = await docker.docker("logs", "--tail", str(max(10, min(lines, 5000))), config.TRAEFIK_CONTAINER)
     return PlainTextResponse(r.text)
+
+
+# --------------------------------------------------------------------------- cloudflare tunnel
+
+@app.get("/api/tunnel/tunnels")
+async def api_tunnel_list():
+    try:
+        return await tunnel.list_tunnels()
+    except (RuntimeError, ValueError) as exc:
+        return bad(str(exc), 502)
+
+
+@app.post("/api/tunnel/login")
+async def api_tunnel_login():
+    return job_response(jobs.start("Cloudflare login", "tunnel", tunnel.login))
+
+
+@app.post("/api/tunnel/use")
+async def api_tunnel_use(request: Request):
+    name = str((await request.json()).get("name", "")).strip()
+    if not tunnel.NAME_RE.match(name):
+        return bad("Tunnel name: letters, digits, '-', '_' or '.', up to 63 characters")
+    return job_response(jobs.start(f"Use tunnel {name}", "tunnel", lambda j: tunnel.use_tunnel(j, name)))
+
+
+@app.post("/api/tunnel/apply")
+async def api_tunnel_apply():
+    return job_response(jobs.start("Restart tunnel connector", "tunnel", tunnel.apply))
+
+
+@app.post("/api/tunnel/publish")
+async def api_tunnel_publish(request: Request):
+    site = await require_site(str((await request.json()).get("project", "")))
+    return job_response(jobs.start(f"Publish {site['domain']}", "tunnel", lambda j: tunnel.publish(j, site)))
+
+
+@app.post("/api/tunnel/unpublish")
+async def api_tunnel_unpublish(request: Request):
+    hostname = str((await request.json()).get("hostname", ""))
+    if hostname not in tunnel.public_hostnames():
+        return bad(f"{hostname} is not published")
+    site = next((s for s in await sites.discover() if s["domain"] == hostname), None)
+    return job_response(jobs.start(f"Unpublish {hostname}", "tunnel", lambda j: tunnel.unpublish(j, hostname, site)))
+
+
+@app.get("/api/tunnel/logs")
+async def api_tunnel_logs(lines: int = 200):
+    r = await docker.docker("logs", "--tail", str(max(10, min(lines, 5000))), config.TUNNEL_CONTAINER)
+    return PlainTextResponse(r.text)
+
+
+@app.post("/api/tunnel/{action}")
+async def api_tunnel_action(action: str):
+    if action not in ("start", "stop", "restart"):
+        raise HTTPException(404)
+    r = await tunnel.control(action)
+    return {"ok": r.ok, "output": r.text}
 
 
 # --------------------------------------------------------------------------- sites

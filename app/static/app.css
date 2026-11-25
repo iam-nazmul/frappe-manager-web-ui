@@ -136,12 +136,17 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); v
 pre.code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow: auto; max-height: 460px; margin: 0; }
 
 /* job drawer */
-.drawer { position: fixed; right: 18px; bottom: 18px; width: min(720px, calc(100vw - 36px)); background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,.28); z-index: 40; display: none; flex-direction: column; max-height: 80vh; }
+.drawer { position: fixed; left: 18px; top: 18px; width: min(720px, calc(100vw - 36px)); height: 380px; min-width: 320px; min-height: 160px; max-width: calc(100vw - 8px); max-height: calc(100vh - 8px); background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,.28); z-index: 40; display: none; flex-direction: column; resize: both; overflow: hidden; }
 .drawer.open { display: flex; }
-.drawer .drawer-head { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+.drawer .drawer-head { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--border); cursor: move; user-select: none; touch-action: none; }
+.drawer .drawer-head .btn { cursor: pointer; }
 .drawer .drawer-head strong { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.drawer .console { border-radius: 0 0 12px 12px; max-height: none; flex: 1; min-height: 260px; }
+.drawer .console { border-radius: 0 0 12px 12px; max-height: none; flex: 1; min-height: 0; }
+.drawer.dragging { opacity: .92; box-shadow: 0 24px 60px rgba(0,0,0,.35); }
+.drawer.dragging .console { pointer-events: none; }
+.drawer.min { height: auto !important; min-height: 0; resize: none; }
 .drawer.min .console { display: none; }
+@media (max-width: 640px) { .drawer { min-width: 0; } }
 
 /* toast */
 .toasts { position: fixed; top: 16px; right: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }

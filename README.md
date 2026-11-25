@@ -36,7 +36,8 @@ Put it behind HTTPS if it is reachable from the internet.
 | **Dashboard** | Docker engine status, Traefik status, all sites (including ones created by the CLI scripts) with live state, quick start/stop |
 | **New site wizard** | Local or VPS mode, ERPNext version picker (live from Docker Hub), admin password, developer mode, VS Code bind-mount of `apps/`, HTTPS, resource limits, plus a live log of every step |
 | **Traefik** | Install or reconfigure (local custom port with free-port finder, or VPS 80/443), Let's Encrypt through the HTTP-01 or Cloudflare DNS-01 challenge, staging CA, start/stop/restart, logs, network repair |
-| **Site → Overview** | Containers with health, per-container start/stop/restart, re-create app, down (keep data), credentials (revealed on request), compose file viewer, `/etc/hosts` helper |
+| **Cloudflare Tunnel** | Publish sites on your Cloudflare domains over HTTPS from any machine (home PC behind a router included): log in, pick or create a tunnel, publish/unpublish sites, connector start/stop/restart and logs |
+| **Site → Overview** | Containers with health, per-container start/stop/restart, re-create app, down (keep data), credentials (revealed on request), compose file viewer, `/etc/hosts` helper, publish/unpublish through Cloudflare Tunnel |
 | **Site → Processes** | Supervisor status for web, scheduler, workers and websocket; start/stop/restart each or all |
 | **Site → Logs** | Every supervisor log, `frappe.log`/`web.error.log`, and app/create-site/db/redis container logs; load or follow live |
 | **Site → Apps & bench** | `get-app` (name or git URL plus branch) and install, install/uninstall app, migrate, build, clear cache, scheduler on/off, developer mode, doctor, set admin password, backups (create and download) |
@@ -44,6 +45,19 @@ Put it behind HTTPS if it is reachable from the internet.
 | **Site → Files & packages** | Upload files into a container, download any file or folder (`.tar`), install apt/apk packages |
 | **Site → Maintenance** | Fix DB permissions, fix restart policies, repair proxy network, delete the site (containers, volumes, folder, and optionally the VS Code folder) |
 | **Tasks** | Every long operation runs as a background task with a replayable live log; logs are saved to `$FDM_DATA_DIR/jobs/` |
+
+## Publishing a site with Cloudflare Tunnel
+
+Use this to make a site public without opening ports, e.g. from a PC behind a home router. The site's domain must be on Cloudflare.
+
+1. Create the site on its real domain (VPS / server mode), e.g. `erp.example.com`.
+2. Open **Cloudflare Tunnel** → **Log in**. Open the link shown in the task log and authorise the domain.
+3. Choose an existing tunnel or type a new name → **Use tunnel**.
+4. Publish the site there or on its Overview tab. The UI creates the DNS record, starts a `cloudflared` container (restarts with Docker), and sets the site's `host_name` to `https://<domain>`.
+
+The site is online only while this machine is running. You don't need to install `cloudflared` on the host; if one is running there, the Tunnel page warns you.
+
+On a Mac, the same steps work with Docker Desktop. Turn on "Start Docker Desktop when you sign in", and remember that the site goes offline while the Mac sleeps. A hostname can be published from only one machine at a time; publishing it elsewhere moves its DNS record there.
 
 ## Generated stack (per site)
 
@@ -73,6 +87,8 @@ site.json              metadata used by the UI
 | `FDM_DEV_DIR` | `~/frappe-docker` | Where VS Code `apps/` folders are created (same as the scripts) |
 | `FDM_TRAEFIK_IMAGE` | `traefik:v3.6` | Traefik image |
 | `FDM_MARIADB_IMAGE` / `FDM_REDIS_IMAGE` | `mariadb:11.8` / `redis:6.2-alpine` | Backing service images |
+| `FDM_CLOUDFLARED_DIR` | `~/.cloudflared` | Cloudflare login certificate and tunnel credentials (shared with a host `cloudflared`) |
+| `FDM_CLOUDFLARED_IMAGE` | `cloudflare/cloudflared:2026.11.2` | Tunnel connector image |
 | `FDM_RELOAD` | — | Set to `1` for auto-reload while developing the UI |
 
 ## Project layout
@@ -85,6 +101,7 @@ web-ui/
     ├── main.py               FastAPI routes (pages, JSON APIs, SSE, WebSocket)
     ├── sites.py              site discovery, creation job, operations
     ├── traefik.py            Traefik config/setup/network repair
+    ├── tunnel.py             Cloudflare Tunnel login, tunnel choice, connector, publish/unpublish
     ├── docker.py             async docker CLI wrappers
     ├── jobs.py               background tasks with live logs
     ├── terminal.py           PTY ↔ WebSocket bridge for docker exec

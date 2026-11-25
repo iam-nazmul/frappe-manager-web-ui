@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Cloudflare Tunnel · Frappe Docker Manager{% endblock %}
+{% block content %}
+{% set t = tunnel %}
+<div class="page-head">
+  <div><h1>Cloudflare Tunnel</h1><div class="sub">Publish sites on your Cloudflare domains over HTTPS, with no open ports or port forwarding. The site is online while this machine is on.</div></div>
+  <div class="row">
+    {% if t.exists %}
+      <button class="btn" data-t="restart">↻ Restart</button>
+      {% if t.running %}<button class="btn" data-t="stop">■ Stop</button>{% else %}<button class="btn primary" data-t="start">▶ Start</button>{% endif %}
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid cols-3" style="margin-bottom:16px">
+  <div class="card stat"><div class="label"><span class="dot {{ 'on' if t.logged_in else 'off' }}"></span>Cloudflare account</div>
+    <div class="value">{{ 'Logged in' if t.logged_in else 'Not logged in' }}</div>
+    <div class="muted small mono">{{ t.cloudflared_dir }}</div></div>
+  <div class="card stat"><div class="label"><span class="dot {{ 'on' if t.has_credentials else ('mid' if t.tunnel_id else 'off') }}"></span>Tunnel</div>
+    <div class="value">{{ t.tunnel_name or '—' }}</div>
+    <div class="muted small mono">{{ t.tunnel_id or 'not chosen' }}</div></div>
+  <div class="card stat"><div class="label"><span class="dot {{ 'on' if t.running else ('mid' if t.exists else 'off') }}"></span>Connector</div>
+    <div class="value">{{ 'Running' if t.running else ('Stopped' if t.exists else 'Not started') }}</div>
+    <div class="muted small mono">{{ t.image }}</div></div>
+</div>
+
+{% if t.host_processes %}
+<div class="callout warn"><strong>cloudflared is also running directly on this machine</strong> (outside Docker):
+  <pre class="code" style="margin:8px 0">{{ t.host_processes | join('\n') }}</pre>
+  If it serves the same tunnel, traffic is split between it and the UI's connector. Once the connector here is running, stop the host one:
+  <code>sudo systemctl disable --now cloudflared</code>, or press Ctrl+C in the terminal where you started it.</div>
+{% endif %}
+
+<div class="grid cols-2" style="align-items:start">
+<div class="stack">
+  <div class="card">
+    <div class="card-head"><h2>1 · Log in to Cloudflare</h2>
+      <button class="btn sm {{ '' if t.logged_in else 'primary' }}" id="login">{{ 'Log in again' if t.logged_in else 'Log in' }}</button></div>
+    <p class="small muted">Opens a task with a Cloudflare link. Open it, sign in and pick the domain your sites use. Hostnames on other domains can't be published with this login.</p>
+  </div>
+
+  <form class="card" id="use">
+    <h2>2 · Tunnel</h2>
+    <div class="field"><label>Existing tunnels</label>
+      <div class="row" style="flex-wrap:nowrap"><select id="tunnels" style="flex:1" {{ 'disabled' if not t.logged_in }}><option value="">{{ 'Loading…' if t.logged_in else 'Log in first' }}</option></select>
+        <button class="btn sm" type="button" id="tunnels-refresh" title="Refresh">⟳</button></div></div>
+    <div class="field"><label>…or a new tunnel name</label>
+      <input type="text" name="name" placeholder="frappe-manager" spellcheck="false" {{ 'disabled' if not t.logged_in }}></div>
+    <button class="btn primary" {{ 'disabled' if not t.logged_in }}>{{ 'Switch tunnel' if t.tunnel_id else 'Use tunnel' }}</button>
+    <p class="small muted" style="margin-top:10px">Only tunnels whose credentials file is in <code>{{ t.cloudflared_dir }}</code> can be used.</p>
+  </form>
+
+  {% if config_text %}<details class="card"><summary><strong>Generated connector config</strong></summary><pre class="code" style="margin-top:10px">{{ config_text }}</pre></details>{% endif %}
+</div>
+
+<div class="stack">
+  <div class="card tight">
+    <div class="row between" style="padding:14px 16px;border-bottom:1px solid var(--border)"><h2 style="margin:0">3 · Public sites</h2></div>
+    {% if t.hostnames %}
+    <table><tbody>
+      {% for h in t.hostnames %}
+      <tr><td><a href="https://{{ h }}" target="_blank">https://{{ h }} ↗</a></td>
+        <td style="text-align:right"><button class="btn sm danger" data-unpublish="{{ h }}">Unpublish</button></td></tr>
+      {% endfor %}
+    </tbody></table>
+    {% else %}<div class="empty">No sites published yet.</div>{% endif %}
+    <form id="publish" class="row" style="padding:14px 16px;border-top:1px solid var(--border)">
+      <select name="project" style="flex:1" {{ 'disabled' if not t.tunnel_id }}>
+        {% for s in public_sites if s.domain not in t.hostnames %}<option value="{{ s.project }}">{{ s.domain }}</option>
+        {% else %}<option value="">No unpublished sites on a real domain</option>{% endfor %}
+      </select>
+      <button class="btn primary" {{ 'disabled' if not t.tunnel_id }}>Publish</button>
+    </form>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Connector logs</h2><button class="btn sm" id="load-logs">Load</button></div>
+    <div class="console" id="clogs" style="min-height:200px;max-height:360px">Press Load.</div>
+  </div>
+</div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const { $, $$, api, esc, toast, runJob, confirmAction } = FDM;
+  const LOGGED_IN = {{ tunnel.logged_in | tojson }}, CURRENT = {{ tunnel.tunnel_name | tojson }};
+  const reloadOnSuccess = (j) => { if (j.status === "success") setTimeout(() => location.reload(), 1200); };
+
+  async function loadTunnels() {
+    if (!LOGGED_IN) return;
+    const sel = $("#tunnels");
+    try {
+      const list = await api("/api/tunnel/tunnels");
+      sel.innerHTML = `<option value="">— choose —</option>` + list.map((t) =>
+        `<option value="${esc(t.name)}" ${t.has_credentials ? "" : "disabled"} ${t.name === CURRENT ? "selected" : ""}>${esc(t.name)} · ${t.connections} conn${t.has_credentials ? "" : " · no credentials here"}</option>`).join("");
+    } catch (e) { sel.innerHTML = `<option value="">${esc(e.message)}</option>`; }
+  }
+  loadTunnels();
+  $("#tunnels-refresh").onclick = loadTunnels;
+
+  $("#login").onclick = () => runJob("/api/tunnel/login", {}, { onDone: reloadOnSuccess });
+  $("#use").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const name = e.target.name.value.trim() || $("#tunnels").value;
+    if (!name) { toast("Choose a tunnel or type a new name", "err"); return; }
+    runJob("/api/tunnel/use", { name }, { onDone: reloadOnSuccess });
+  });
+  $("#publish").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const project = e.target.project.value;
+    if (!project) return;
+    runJob("/api/tunnel/publish", { project }, { onDone: reloadOnSuccess });
+  });
+  $$("[data-unpublish]").forEach((b) => b.onclick = async () => {
+    const h = b.dataset.unpublish;
+    if (await confirmAction(`Stop serving https://${h} through the tunnel?`, { danger: true, okText: "Unpublish" }))
+      runJob("/api/tunnel/unpublish", { hostname: h }, { onDone: reloadOnSuccess });
+  });
+  $$("[data-t]").forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    try { const r = await api(`/api/tunnel/${b.dataset.t}`, { method: "POST" }); toast(r.ok ? `Connector ${b.dataset.t}ed` : r.output, r.ok ? "ok" : "err"); setTimeout(() => location.reload(), 800); }
+    catch (e) { toast(e.message, "err"); b.disabled = false; }
+  });
+  $("#load-logs").onclick = async () => { const el = $("#clogs"); el.textContent = await api("/api/tunnel/logs?lines=300"); el.scrollTop = el.scrollHeight; };
+})();
+</script>
+{% endblock %}
